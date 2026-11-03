@@ -4592,7 +4592,8 @@ WipeTower::ToolChangeResult WipeTower2::finish_block(const WipeTowerBlock& block
                 sparse_factor = 1.f;
             }
             float y = fill_box.ld.y() + m_perimeter_width;
-            int   n = dy / (m_perimeter_width * sparse_factor);
+            // FOS: row count from the finishing tool's bead (rows still span the box).
+            int   n = std::max(2, int(dy / (tool_line_width(filament_id) * sparse_factor)));
             float spacing = (dy - m_perimeter_width) / (n - 1);
             int   i = 0;
             for (i = 0; i < n; ++i) {
@@ -4681,7 +4682,8 @@ WipeTower::ToolChangeResult WipeTower2::finish_block_solid(const WipeTowerBlock&
         block.start_depth + block.layer_depths[m_cur_layer_id] - block.cur_depth - m_perimeter_width);
     bool toolchanges_on_layer = m_layer_info->toolchanges_depth() > WT_EPSILON;
     const float dy = (fill_box.lu.y() - fill_box.ld.y());
-    int   n = (dy + 0.25 * fill_pw) / fill_pw + 1;
+    // FOS: a wider bead must not overshoot the box further than upstream's structure-width rows.
+    int   n = std::max(1, int((dy + 0.25 * m_perimeter_width - std::max(0.f, fill_pw - m_perimeter_width)) / fill_pw) + 1);
     float spacing = fill_pw;
     Vec2f initial_pos(0, 0);
     bool up_to_down = false;
