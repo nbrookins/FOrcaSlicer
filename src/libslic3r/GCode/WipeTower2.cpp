@@ -3202,8 +3202,12 @@ void WipeTower2::plan_local_z_reserve(float z_par, float layer_height_par, size_
                 ? 0.25f * std::accumulate(filament.ramming_speed.begin(), filament.ramming_speed.end(), 0.f)
                 : filament.multitool_ramming_volume;
             const float length_to_extrude = volume_to_length(ramming_volume, line_width, layer_height_par);
+            // FOS: a wider tool rams on a narrower box (toolchange_unload_new); equals upstream otherwise.
+            const float ram_span = std::max(float(WT_EPSILON),
+                                            wipe_width - std::max(0.f, (tool_line_width(tool) - m_perimeter_width) *
+                                                                           filament.ramming_line_width_multiplicator));
             const float ramming_depth =
-                (std::max(1.0f, std::ceil(length_to_extrude / wipe_width)) * line_step);
+                (std::max(1.0f, std::ceil(length_to_extrude / ram_span)) * line_step);
             max_ramming_depth = std::max(max_ramming_depth, ramming_depth);
         }
     }

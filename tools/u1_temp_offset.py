@@ -140,9 +140,11 @@ def main():
                   f"(now {temps.get(head, 0):.0f} C){' [dry run]' if args.dry_run else ''}", flush=True)
             last_sent[head] = now
             if not args.dry_run:
+                # Record first: if the reply times out after the printer applied it, the new target
+                # must still be recognised as ours, or an --offset would be applied on top of itself.
+                ours[head] = want
                 try:
                     mr.gcode(cmd)
-                    ours[head] = want
                 except (urllib.error.URLError, TimeoutError, OSError) as e:
                     print(f"[u1-temp] send failed: {e}", flush=True)
         time.sleep(args.interval)

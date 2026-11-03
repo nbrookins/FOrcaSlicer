@@ -3259,9 +3259,11 @@ void PrintObject::bridge_over_infill()
 } // void PrintObject::bridge_over_infill()
 
 // FOS 8.5: per-nozzle stamp helpers (defined below).
-void fos_stamp_per_nozzle_object(PrintObjectConfig &c, const PrintObjectConfig *base = nullptr);
+void fos_stamp_per_nozzle_object(PrintObjectConfig &c, const PrintObjectConfig *base = nullptr,
+                                 const std::set<std::string> *explicit_keys = nullptr);
 void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *base = nullptr,
-                                 const PrintRegionConfig *prev = nullptr);
+                                 const PrintRegionConfig *prev = nullptr, const std::set<std::string> *explicit_keys = nullptr);
+std::set<std::string> fos_explicit_keys(const ModelVolume &volume, const DynamicPrintConfig *layer_range_config);
 
 // Clamp extruder IDs that exceed the total number of available filaments
 // (physical + virtual/mixed) back to the default extruder.
@@ -3301,7 +3303,11 @@ PrintObjectConfig PrintObject::object_config_from_model_object(const PrintObject
     // and must NOT run on top of these. A 0 (or out-of-range) entry means "not authored":
     // leave the scalar as-is, so uncovered keys and the support_filament==0 gate degrade to
     // the region/object default.
-    fos_stamp_per_nozzle_object(config, &default_object_config);
+    {
+        const t_config_option_keys ks = object.config.get().keys();
+        const std::set<std::string> explicit_keys(ks.begin(), ks.end());
+        fos_stamp_per_nozzle_object(config, &default_object_config, &explicit_keys);
+    }
     return config;
 }
 
@@ -3328,9 +3334,9 @@ bool fos_speed_overridden(const ConfigOptionFloats &arr, const ConfigOptionFloat
              std::all_of(dst.values.begin(), dst.values.end(), [&](double v) { return v == arr.values[p]; }));
 }
 void fos_stamp_width(const ConfigOptionFloats &arr, ConfigOptionFloatOrPercent &dst, const ConfigOptionFloatOrPercent *base,
-                     int prev_filament, int filament)
+                     int prev_filament, int filament, bool explicit_override = false)
 {
-    if (fos_width_overridden(arr, dst, base, prev_filament))
+    if (explicit_override || fos_width_overridden(arr, dst, base, prev_filament))
         return;
     const int i = filament - 1;
     if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0) {
@@ -3340,9 +3346,9 @@ void fos_stamp_width(const ConfigOptionFloats &arr, ConfigOptionFloatOrPercent &
 }
 // 2.4.1 stores speeds per flow variant; the per-nozzle value applies to every variant.
 void fos_stamp_speed(const ConfigOptionFloats &arr, ConfigOptionFloats &dst, const ConfigOptionFloats *base,
-                     int prev_filament, int filament)
+                     int prev_filament, int filament, bool explicit_override = false)
 {
-    if (fos_speed_overridden(arr, dst, base, prev_filament))
+    if (explicit_override || fos_speed_overridden(arr, dst, base, prev_filament))
         return;
     const int i = filament - 1;
     if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0) {
@@ -3355,13 +3361,17 @@ void fos_stamp_speed(const ConfigOptionFloats &arr, ConfigOptionFloats &dst, con
 } // namespace
 
 // FOS 8.5: filament->key mapping per SKILL-architecture. Object-scope keys only.
-void fos_stamp_per_nozzle_object(PrintObjectConfig &c, const PrintObjectConfig *base)
+void fos_stamp_per_nozzle_object(PrintObjectConfig &c, const PrintObjectConfig *base, const std::set<std::string> *explicit_keys)
 {
 #define FOS_BASE(key) (base ? &base->key : nullptr)
-    fos_stamp_width(c.fos_nozzle_support_line_width, c.support_line_width, FOS_BASE(support_line_width), 0, c.support_filament.value);
-    fos_stamp_speed(c.fos_nozzle_support_speed, c.support_speed, FOS_BASE(support_speed), 0, c.support_filament.value);
+#define FOS_EXPL(key) (explicit_keys != nullptr && explicit_keys->count(#key) > 0)
+    fos_stamp_width(c.fos_nozzle_support_line_width, c.support_line_width, FOS_BASE(support_line_width), 0, c.support_filament.value,
+                    FOS_EXPL(support_line_width));
+    fos_stamp_speed(c.fos_nozzle_support_speed, c.support_speed, FOS_BASE(support_speed), 0, c.support_filament.value,
+                    FOS_EXPL(support_speed));
     fos_stamp_speed(c.fos_nozzle_support_interface_speed, c.support_interface_speed, FOS_BASE(support_interface_speed), 0,
-                    c.support_interface_filament.value);
+                    c.support_interface_filament.value, FOS_EXPL(support_interface_speed));
+#undef FOS_EXPL
 #undef FOS_BASE
 }
 
@@ -3370,7 +3380,8 @@ static constexpr const std::initializer_list<const std::string_view> keys_extrud
 
 // FOS 8.5: filament->key mapping per SKILL-architecture. Region-scope keys only.
 // inner_wall_filament is not clamped upstream, so the helper bounds-checks the index.
-void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *base, const PrintRegionConfig *prev)
+void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *base, const PrintRegionConfig *prev,
+                                 const std::set<std::string> *explicit_keys)
 {
     const int wall   = c.wall_filament.value;
     const int inner  = c.inner_wall_filament.value;
@@ -3381,20 +3392,38 @@ void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *
     const int p_solid  = prev ? prev->solid_infill_filament.value : 0;
     const int p_sparse = prev ? prev->sparse_infill_filament.value : 0;
 #define FOS_BASE(key) (base ? &base->key : nullptr)
-    fos_stamp_width(c.fos_nozzle_outer_wall_line_width,            c.outer_wall_line_width,            FOS_BASE(outer_wall_line_width),            p_wall,   wall);
-    fos_stamp_width(c.fos_nozzle_inner_wall_line_width,            c.inner_wall_line_width,            FOS_BASE(inner_wall_line_width),            p_inner,  inner);
-    fos_stamp_width(c.fos_nozzle_top_surface_line_width,           c.top_surface_line_width,           FOS_BASE(top_surface_line_width),           p_solid,  solid);
-    fos_stamp_width(c.fos_nozzle_internal_solid_infill_line_width, c.internal_solid_infill_line_width, FOS_BASE(internal_solid_infill_line_width), p_solid,  solid);
-    fos_stamp_width(c.fos_nozzle_sparse_infill_line_width,         c.sparse_infill_line_width,         FOS_BASE(sparse_infill_line_width),         p_sparse, sparse);
-    fos_stamp_speed(c.fos_nozzle_outer_wall_speed,            c.outer_wall_speed,            FOS_BASE(outer_wall_speed),            p_wall,   wall);
-    fos_stamp_speed(c.fos_nozzle_inner_wall_speed,            c.inner_wall_speed,            FOS_BASE(inner_wall_speed),            p_inner,  inner);
-    fos_stamp_speed(c.fos_nozzle_top_surface_speed,           c.top_surface_speed,           FOS_BASE(top_surface_speed),           p_solid,  solid);
-    fos_stamp_speed(c.fos_nozzle_internal_solid_infill_speed, c.internal_solid_infill_speed, FOS_BASE(internal_solid_infill_speed), p_solid,  solid);
-    fos_stamp_speed(c.fos_nozzle_ironing_speed,               c.ironing_speed,               FOS_BASE(ironing_speed),               p_solid,  solid);
-    fos_stamp_speed(c.fos_nozzle_sparse_infill_speed,         c.sparse_infill_speed,         FOS_BASE(sparse_infill_speed),         p_sparse, sparse);
+#define FOS_EXPL(key) (explicit_keys != nullptr && explicit_keys->count(#key) > 0)
+    fos_stamp_width(c.fos_nozzle_outer_wall_line_width,            c.outer_wall_line_width,            FOS_BASE(outer_wall_line_width),            p_wall,   wall, FOS_EXPL(outer_wall_line_width));
+    fos_stamp_width(c.fos_nozzle_inner_wall_line_width,            c.inner_wall_line_width,            FOS_BASE(inner_wall_line_width),            p_inner,  inner, FOS_EXPL(inner_wall_line_width));
+    fos_stamp_width(c.fos_nozzle_top_surface_line_width,           c.top_surface_line_width,           FOS_BASE(top_surface_line_width),           p_solid,  solid, FOS_EXPL(top_surface_line_width));
+    fos_stamp_width(c.fos_nozzle_internal_solid_infill_line_width, c.internal_solid_infill_line_width, FOS_BASE(internal_solid_infill_line_width), p_solid,  solid, FOS_EXPL(internal_solid_infill_line_width));
+    fos_stamp_width(c.fos_nozzle_sparse_infill_line_width,         c.sparse_infill_line_width,         FOS_BASE(sparse_infill_line_width),         p_sparse, sparse, FOS_EXPL(sparse_infill_line_width));
+    fos_stamp_speed(c.fos_nozzle_outer_wall_speed,            c.outer_wall_speed,            FOS_BASE(outer_wall_speed),            p_wall,   wall, FOS_EXPL(outer_wall_speed));
+    fos_stamp_speed(c.fos_nozzle_inner_wall_speed,            c.inner_wall_speed,            FOS_BASE(inner_wall_speed),            p_inner,  inner, FOS_EXPL(inner_wall_speed));
+    fos_stamp_speed(c.fos_nozzle_top_surface_speed,           c.top_surface_speed,           FOS_BASE(top_surface_speed),           p_solid,  solid, FOS_EXPL(top_surface_speed));
+    fos_stamp_speed(c.fos_nozzle_internal_solid_infill_speed, c.internal_solid_infill_speed, FOS_BASE(internal_solid_infill_speed), p_solid,  solid, FOS_EXPL(internal_solid_infill_speed));
+    fos_stamp_speed(c.fos_nozzle_ironing_speed,               c.ironing_speed,               FOS_BASE(ironing_speed),               p_solid,  solid, FOS_EXPL(ironing_speed));
+    fos_stamp_speed(c.fos_nozzle_sparse_infill_speed,         c.sparse_infill_speed,         FOS_BASE(sparse_infill_speed),         p_sparse, sparse, FOS_EXPL(sparse_infill_speed));
     // Gap fill is emitted with the fills and printed by the sparse-infill head (GCode.cpp).
-    fos_stamp_speed(c.fos_nozzle_gap_infill_speed,            c.gap_infill_speed,            FOS_BASE(gap_infill_speed),            p_sparse, sparse);
+    fos_stamp_speed(c.fos_nozzle_gap_infill_speed,            c.gap_infill_speed,            FOS_BASE(gap_infill_speed),            p_sparse, sparse, FOS_EXPL(gap_infill_speed));
+#undef FOS_EXPL
 #undef FOS_BASE
+}
+
+// FOS: keys the user set explicitly on the object / part / material / layer range; the per-nozzle
+// stamp never replaces these, even when their value happens to equal the inherited one.
+std::set<std::string> fos_explicit_keys(const ModelVolume &volume, const DynamicPrintConfig *layer_range_config)
+{
+    std::set<std::string> keys;
+    auto add = [&keys](const t_config_option_keys &ks) { keys.insert(ks.begin(), ks.end()); };
+    if (const ModelObject *object = volume.get_object())
+        add(object->config.get().keys());
+    add(volume.config.get().keys());
+    if (!volume.material_id().empty() && volume.material() != nullptr)
+        add(volume.material()->config.get().keys());
+    if (layer_range_config != nullptr)
+        add(layer_range_config->keys());
+    return keys;
 }
 
 static void apply_to_print_region_config(PrintRegionConfig &out, const DynamicPrintConfig &in)
@@ -3443,7 +3472,10 @@ PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &defau
     // FOS 8.5: stamp per-nozzle resolved widths/speeds into the region scalars. See the
     // object-scope helper for the contract (resolved absolute mm; 0 = leave as-is; the old
     // ratio path is gone and must not re-derive on top).
-    fos_stamp_per_nozzle_region(config, &default_or_parent_region_config);
+    {
+        const std::set<std::string> explicit_keys = fos_explicit_keys(volume, layer_range_config);
+        fos_stamp_per_nozzle_region(config, &default_or_parent_region_config, nullptr, &explicit_keys);
+    }
     if (config.sparse_infill_density.value < 0.00011f)
         // Switch of infill for very low infill rates, also avoid division by zero in infill generator for these very low rates.
         // See GH issue #5910.

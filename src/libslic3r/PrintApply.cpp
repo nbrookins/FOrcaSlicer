@@ -10,7 +10,8 @@ namespace Slic3r {
 
 // FOS: defined in PrintObject.cpp.
 void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *base = nullptr,
-                                 const PrintRegionConfig *prev = nullptr);
+                                 const PrintRegionConfig *prev = nullptr, const std::set<std::string> *explicit_keys = nullptr);
+std::set<std::string> fos_explicit_keys(const ModelVolume &volume, const DynamicPrintConfig *layer_range_config);
 
 // Add or remove support modifier ModelVolumes from model_object_dst to match the ModelVolumes of model_object_new
 // in the exact order and with the same IDs.
@@ -837,7 +838,10 @@ bool verify_update_print_object_regions(
             cfg.solid_infill_filament.value  = region.extruder_id;
             cfg.sparse_infill_filament.value = region.extruder_id;
             // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
-            fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config());
+            {
+                const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
+                fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
+            }
             if (cfg != region.region->config()) {
                 // Region configuration changed.
                 if (print_region_ref_cnt(*region.region) == 0) {
@@ -1085,7 +1089,10 @@ static PrintObjectRegions* generate_print_object_regions(
                     cfg.solid_infill_filament.value = painted_extruder_id;
                     cfg.sparse_infill_filament.value       = painted_extruder_id;
                     // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
-                    fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config());
+                    {
+                        const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
+                        fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
+                    }
                     // Keep PrintRegion config-interned. If a painted target resolves to the same
                     // config as its parent, alias it instead of creating a duplicate PrintRegion.
                     PrintRegion *painted_region = get_create_region(std::move(cfg));
