@@ -14,6 +14,7 @@
 #include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/GCode/WipeTowerHelper.hpp"
 #if ENABLE_ENHANCED_PRINT_VOLUME_FIT
 #include "libslic3r/BuildVolume.hpp"
 #endif // ENABLE_ENHANCED_PRINT_VOLUME_FIT
@@ -638,7 +639,7 @@ void Selection::set_deserialized(EMode mode, const std::vector<std::pair<size_t,
     set_bounding_boxes_dirty();
 }
 
-void Selection::clear()
+void Selection::clear(bool notify_sidebar)
 {
     if (!m_valid)
         return;
@@ -682,7 +683,8 @@ void Selection::clear()
 #endif
 
     // #et_FIXME fake KillFocus from sidebar
-    wxGetApp().plater()->canvas3D()->handle_sidebar_focus_event("", false);
+    if (notify_sidebar)
+        wxGetApp().plater()->canvas3D()->handle_sidebar_focus_event("", false);
 }
 
 // Update the selection based on the new instance IDs.
@@ -1190,16 +1192,20 @@ void Selection::translate(const Vec3d &displacement, TransformationType transfor
             if (v.is_wipe_tower) {//in world cs
                 int           plate_idx           = v.object_idx() - 1000;
                 BoundingBoxf3 plate_bbox          = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)->get_bounding_box();
+                BoundingBox plate_bbox2d = BoundingBox(scaled(Vec2f(plate_bbox.min[0], plate_bbox.min[1])), scaled(Vec2f(plate_bbox.max[0], plate_bbox.max[1])));
                 Vec3d         tower_size          = v.bounding_box().size();
                 Vec3d         tower_origin        = m_cache.volumes_data[i].get_volume_position();
                 Vec3d         actual_displacement = displacement;
-                const double  margin              = WIPE_TOWER_MARGIN;
+                bool show_read_wipe_tower = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)->fff_print()->is_step_done(psWipeTower);
+                float brim_width = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_float("prime_tower_brim_width");
+
+                const double margin = show_read_wipe_tower ? WIPE_TOWER_MARGIN : brim_width + 0.5;
 
                 actual_displacement = (m_cache.volumes_data[i].get_instance_rotation_matrix() * m_cache.volumes_data[i].get_instance_scale_matrix() *
                                         m_cache.volumes_data[i].get_instance_mirror_matrix())
                                             .inverse() *
                                         displacement;
-                if (tower_origin(0) + actual_displacement(0) - margin < plate_bbox.min(0)) {
+                /*if (tower_origin(0) + actual_displacement(0) - margin < plate_bbox.min(0)) {
                     actual_displacement(0) = plate_bbox.min(0) - tower_origin(0) + margin;
                 } else if (tower_origin(0) + actual_displacement(0) + tower_size(0) + margin > plate_bbox.max(0)) {
                     actual_displacement(0) = plate_bbox.max(0) - tower_origin(0) - tower_size(0) - margin;
@@ -1209,8 +1215,12 @@ void Selection::translate(const Vec3d &displacement, TransformationType transfor
                     actual_displacement(1) = plate_bbox.min(1) - tower_origin(1) + margin;
                 } else if (tower_origin(1) + actual_displacement(1) + tower_size(1) + margin > plate_bbox.max(1)) {
                     actual_displacement(1) = plate_bbox.max(1) - tower_origin(1) - tower_size(1) - margin;
-                }
-
+                }*/
+                BoundingBoxf3 tower_bbox = v.bounding_box();
+                tower_bbox.translate(actual_displacement + tower_origin);
+                BoundingBox tower_bbox2d = BoundingBox(scaled(Vec2f(tower_bbox.min[0], tower_bbox.min[1])), scaled(Vec2f(tower_bbox.max[0], tower_bbox.max[1])));
+                Vec2f offset = WipeTowerHelper::move_box_inside_box(tower_bbox2d, plate_bbox2d, scaled(margin));
+                actual_displacement += Vec3d(offset[0], offset[1], 0);
                 v.set_volume_offset(m_cache.volumes_data[i].get_volume_position() + actual_displacement);
             }
             else if (transformation_type.local() && transformation_type.absolute()) {
@@ -3158,7 +3168,7 @@ void Selection::paste_objects_from_clipboard()
         if (shift_all(0) != 0 || shift_all(1) != 0) {
             // BBS: if multiple objects are selected, move them as a whole after copy
             if (i == 0) empty_cell_all = wxGetApp().plater()->canvas3D()->get_nearest_empty_cell({start_point(0), start_point(1)}, {bbox.size()(0)+1,bbox.size()(1)+1});
-            auto instance_shift = src_object->instances.front()->get_offset() - src_objects[0]->instances.front()->get_offset();
+            Vec3d instance_shift = src_object->instances.front()->get_offset() - src_objects[0]->instances.front()->get_offset();
             displacement        = {shift_all.x() + empty_cell_all.x() + instance_shift.x(), shift_all.y() + empty_cell_all.y() + instance_shift.y(), start_offset(2)};
         } else {
             // BBS: if only one object is copied, find an empty cell to put it
@@ -3169,11 +3179,8 @@ void Selection::paste_objects_from_clipboard()
 
         for (ModelInstance* inst : dst_object->instances) {
             inst->set_offset(displacement);
-
-            //BBS init asssmble transformation
-            Geometry::Transformation t = inst->get_transformation();
-            inst->set_assemble_transformation(t);
         }
+        m_model->InitializeAssemblyPositions({dst_object});
 
         object_idxs.push_back(m_model->objects.size() - 1);
 #ifdef _DEBUG

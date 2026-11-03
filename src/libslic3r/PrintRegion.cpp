@@ -2,7 +2,18 @@
 #include "Print.hpp"
 #include <boost/log/trivial.hpp>
 
+#include <cmath>
+
 namespace Slic3r {
+
+namespace {
+
+bool internal_solid_infill_uses_sparse_filament(const PrintRegionConfig &config, FlowRole role)
+{
+    return role == frSolidInfill && std::abs(config.sparse_infill_density.value - 100.) < EPSILON;
+}
+
+} // namespace
 
 // 1-based extruder identifier for this region and role.
 unsigned int PrintRegion::extruder(FlowRole role) const
@@ -14,7 +25,9 @@ unsigned int PrintRegion::extruder(FlowRole role) const
         extruder = m_config.inner_wall_filament;
     else if (role == frInfill)
         extruder = m_config.sparse_infill_filament;
-    else if (role == frSolidInfill || role == frTopSolidInfill)
+    else if (role == frSolidInfill)
+        extruder = internal_solid_infill_uses_sparse_filament(m_config, role) ? m_config.sparse_infill_filament : m_config.solid_infill_filament;
+    else if (role == frTopSolidInfill)
         extruder = m_config.solid_infill_filament;
     else
         throw Slic3r::InvalidArgument("Unknown role");
@@ -81,7 +94,7 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
 coordf_t PrintRegion::nozzle_dmr_avg(const PrintConfig &print_config) const
 {
     return (print_config.nozzle_diameter.get_at(m_config.wall_filament.value    - 1) + 
-            print_config.nozzle_diameter.get_at(m_config.sparse_infill_filament.value       - 1) + 
+            print_config.nozzle_diameter.get_at(m_config.sparse_infill_filament.value - 1) +
             print_config.nozzle_diameter.get_at(m_config.solid_infill_filament.value - 1)) / 3.;
 }
 
@@ -104,7 +117,7 @@ void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_con
     	emplace_extruder(region_config.inner_wall_filament);
     }
     if (region_config.sparse_infill_density.value > 0)
-    	emplace_extruder(region_config.sparse_infill_filament);
+        emplace_extruder(region_config.sparse_infill_filament);
     if (region_config.top_shell_layers.value > 0 || region_config.bottom_shell_layers.value > 0)
     	emplace_extruder(region_config.solid_infill_filament);
 }

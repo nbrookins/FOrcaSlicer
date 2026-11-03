@@ -2850,6 +2850,12 @@ msgstr ""
 msgid "Confirm"
 msgstr ""
 
+msgid "Confirm slicing"
+msgstr ""
+
+msgid "This material combination may cause risks. Do you want to continue?"
+msgstr ""
+
 msgid "Close"
 msgstr ""
 
@@ -6273,8 +6279,8 @@ msgid "Upload and Print"
 msgstr ""
 
 msgid ""
-"Print By Object: \n"
-"Suggest to use auto-arrange to avoid collisions when printing."
+"Printing by object with caution. This function may cause the print head to "
+"collide with printed parts during switching."
 msgstr ""
 
 msgid "Send G-code"
@@ -7604,9 +7610,15 @@ msgstr ""
 msgid "Cool Plate (SuperTack)"
 msgstr ""
 
+msgid "Bed temperature when the Cool Plate (SuperTack) is installed. A value of 0 means the filament does not support printing on the Cool Plate (SuperTack)."
+msgstr ""
+
+msgid "Cool Steel Plate"
+msgstr ""
+
 msgid ""
-"Bed temperature when the Cool Plate SuperTack is installed. A value of 0 "
-"means the filament does not support printing on the Cool Plate SuperTack."
+"Bed temperature when the Cool Steel Plate is installed. A value of 0 "
+"means the filament does not support printing on the Cool Steel Plate."
 msgstr ""
 
 msgid "Cool Plate"
@@ -8127,6 +8139,12 @@ msgstr ""
 msgid "Add consumable extruder after existing extruders."
 msgstr ""
 
+msgid "Keep color"
+msgstr ""
+
+msgid "Add this cluster color as a new filament."
+msgstr ""
+
 msgid "Reset mapped extruders."
 msgstr ""
 
@@ -8626,6 +8644,9 @@ msgid "Update firmware"
 msgstr ""
 
 msgid "Beta version"
+msgstr ""
+
+msgid "Release"
 msgstr ""
 
 msgid "Updating"
@@ -9312,7 +9333,12 @@ msgstr ""
 
 msgid ""
 "Bed temperature for layers except the initial one. A value of 0 means the "
-"filament does not support printing on the Cool Plate SuperTack."
+"filament does not support printing on the Cool Steel Plate."
+msgstr ""
+
+msgid ""
+"Bed temperature for layers except the initial one. A value of 0 means the "
+"filament does not support printing on this plate."
 msgstr ""
 
 msgid ""
@@ -9348,7 +9374,12 @@ msgstr ""
 
 msgid ""
 "Bed temperature of the initial layer. A value of 0 means the filament does "
-"not support printing on the Cool Plate SuperTack."
+"not support printing on the Cool Steel Plate."
+msgstr ""
+
+msgid ""
+"Bed temperature of the initial layer. A value of 0 means the filament does "
+"not support printing on this plate."
 msgstr ""
 
 msgid ""
@@ -13210,6 +13241,38 @@ msgstr ""
 msgid "Top shell layers"
 msgstr ""
 
+msgid "Top paint penetration layers"
+msgstr ""
+
+msgid "This is  the number of layers of top paint penetration."
+msgstr ""
+
+msgid "Bottom paint penetration layers"
+msgstr ""
+
+msgid "This is the number of layers of bottom paint penetration."
+msgstr ""
+
+msgid ""
+"Top paint penetration layers cannot exceed top shell layers.\n"
+"Top paint penetration layers will be reset to %d."
+msgstr ""
+
+msgid ""
+"Bottom paint penetration layers cannot exceed bottom shell layers.\n"
+"Bottom paint penetration layers will be reset to %d."
+msgstr ""
+
+msgid ""
+"The top paint penetration layers (%1%) of object %2% exceed the total layer "
+"count (%3%) of this object. Please reduce the top paint penetration layers."
+msgstr ""
+
+msgid ""
+"The bottom paint penetration layers (%1%) of object %2% exceed the total layer "
+"count (%3%) of this object. Please reduce the bottom paint penetration layers."
+msgstr ""
+
 msgid ""
 "This is the number of solid layers of top shell, including the top surface "
 "layer. When the thickness calculated by this value is thinner than top shell "
@@ -16244,8 +16307,20 @@ msgstr ""
 msgid "Snapmaker Orca integrates some features from the 3D printing open-source community, with specific attributions provided in the code comments."
 msgstr "
 
-msgid "Snapmaker Orca is licensed under the GNU Affero Generall Public License, version 3."
+msgid "Snapmaker Orca is licensed under the GNU Affero General Public License, version 3."
 msgstr ""
 
 msgid "OrcaSlicer is forked from Bambu Studio by Bambu Lab."
 msgstr ""
+
+msgid "Incompatible filament types cannot be mixed. Please correct the selection."
+msgstr ""
+
+#: src/slic3r/GUI/Preferences.cpp
+msgid "GPU-accelerated G-code preview"
+msgstr ""
+
+#: src/slic3r/GUI/Preferences.cpp
+msgid "Rebuild toolpath geometry on the GPU: much faster preview loading and lower memory on capable graphics cards. If the preview moves slower than before (for example on basic integrated graphics), turn this off to use the compatible renderer. Takes effect when the preview is reloaded."
+msgstr ""
+

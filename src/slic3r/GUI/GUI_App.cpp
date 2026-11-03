@@ -1,4 +1,5 @@
 #include "libslic3r/Technologies.hpp"
+#include "libslic3r/AllowlistManager.hpp"
 #include "libslic3r/FilamentHotBedNozzleRules.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Init.hpp"
@@ -11,12 +12,12 @@
 #include "Downloader.hpp"
 
 #include "slic3r/GUI/WebUrlDialog.hpp"
-#include "slic3r/GUI/WebPresetDialog.hpp"
 
 #include "slic3r/GUI/SSWCP.hpp"
 #include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
+#include "libslic3r/MixedFilament.hpp"
 
 // Localization headers: include libslic3r version first so everything in this file
 // uses the slic3r/GUI version (the macros will take precedence over the functions).
@@ -28,13 +29,19 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <iterator>
 #include <exception>
 #include <cstdlib>
+#include <clocale>
 #include <regex>
 #include <thread>
 #include <string_view>
+#include <cstdio>
+#include <random>
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/filesystem/fstream.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 #include <boost/lexical_cast.hpp>
@@ -69,6 +76,7 @@
 #include <wx/fontutil.h>
 #include <wx/glcanvas.h>
 #include <wx/utils.h>
+#include <wx/thread.h>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 
@@ -93,8 +101,12 @@
 #include "../Utils/PrintHost.hpp"
 #include "../Utils/Process.hpp"
 #include "../Utils/MacDarkMode.hpp"
+#include "../Utils/GatewayProtocol.hpp"
+#include "../Utils/GatewayService.hpp"
+#include "../Utils/GatewayDevice.hpp"
 #include "../Utils/Http.hpp"
 #include "../Utils/InstanceID.hpp"
+#include "../Utils/SnapLogClient.hpp"
 #include "../Utils/UndoRedo.hpp"
 #include "slic3r/Config/Snapshot.hpp"
 #include "Preferences.hpp"
@@ -118,6 +130,7 @@
 #include "Notebook.hpp"
 #include "Widgets/Label.hpp"
 #include "Widgets/ProgressDialog.hpp"
+#include "Widgets/SideButton.hpp"
 
 //BBS: DailyTip and UserGuide Dialog
 #include "WebDownPluginDlg.hpp"
@@ -235,6 +248,71 @@ bool GUI_App::has_filament_hot_bed_nozzle_rules() const
 }
 
 class MainFrame;
+
+namespace {
+
+bool startup_profile_enabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("ORCA_STARTUP_PROFILE");
+        if (value == nullptr)
+            return false;
+
+        std::string normalized(value);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+    }();
+    return enabled;
+}
+
+class StartupProfiler
+{
+public:
+    explicit StartupProfiler(const char* phase)
+        : m_phase(phase)
+        , m_enabled(startup_profile_enabled())
+        , m_phase_start(std::chrono::steady_clock::now())
+        , m_step_start(m_phase_start)
+    {
+        if (m_enabled)
+            BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " begin";
+    }
+
+    bool enabled() const { return m_enabled; }
+
+    void mark(const char* step)
+    {
+        if (!m_enabled)
+            return;
+        const auto now      = std::chrono::steady_clock::now();
+        const auto step_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_step_start).count();
+        const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_phase_start).count();
+        BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " step=" << step << " step_ms=" << step_ms << " total_ms=" << total_ms;
+        m_step_start = now;
+    }
+
+    void note(const std::string& message) const
+    {
+        if (m_enabled)
+            BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " " << message;
+    }
+
+    ~StartupProfiler()
+    {
+        if (!m_enabled)
+            return;
+        const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_phase_start).count();
+        BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " end total_ms=" << total_ms;
+    }
+
+private:
+    const char*                                m_phase;
+    bool                                       m_enabled;
+    std::chrono::steady_clock::time_point      m_phase_start;
+    std::chrono::steady_clock::time_point      m_step_start;
+};
+
+} // namespace
 
 void start_ping_test()
 {
@@ -358,15 +436,15 @@ public:
         scale_bitmap(m_main_bitmap, m_scale);
 
         // init constant texts and scale fonts
-        m_constant_text.init(Label::Body_16);
+        m_constant_text.init();
 
 		// ORCA scale all fonts with monitor scale
-        scale_font(m_constant_text.version_font,	m_scale * 2);
-        scale_font(m_constant_text.based_on_font,	m_scale * 1.5f);
-        scale_font(m_constant_text.credits_font,	m_scale * 2);
+        scale_font(m_constant_text.titleFont,       m_scale * 1.5f);
+        scale_font(m_constant_text.versionFont,     m_scale * 1.5f);
+        scale_font(m_constant_text.loadingFont,     m_scale * 1.5f);
 
         // this font will be used for the action string
-        m_action_font = m_constant_text.credits_font;
+        m_action_font = m_constant_text.loadingFont;
 
         // draw logo and constant info text
         Decorate(m_main_bitmap);
@@ -382,7 +460,7 @@ public:
             wxMemoryDC memDC;
             memDC.SelectObject(bitmap);
             memDC.SetFont(m_action_font);
-            memDC.SetTextForeground(StateColor::darkModeColorFor(wxColour(144, 144, 144)));
+            memDC.SetTextForeground(wxColour(143, 143, 143));
             int width = bitmap.GetWidth();
             int text_height = memDC.GetTextExtent(text).GetHeight();
             int text_width = memDC.GetTextExtent(text).GetWidth();
@@ -403,41 +481,54 @@ public:
         if (!bmp.IsOk())
             return;
 
-		bool is_dark = wxGetApp().app_config->get("dark_color_mode") == "1";
-
         // use a memory DC to draw directly onto the bitmap
         wxMemoryDC memDc(bmp);
-        
-        int width = bmp.GetWidth();
-		int height = bmp.GetHeight();
 
-		// Logo
-        BitmapCache bmp_cache;
-        wxBitmap logo_bmp = *bmp_cache.load_svg(is_dark ? "splash_logo_dark" : "splash_logo", width, height);  // use with full width & height
-        memDc.DrawBitmap(logo_bmp, 0, 0, true);
+        int width  = bmp.GetWidth();
+        int height = bmp.GetHeight();
 
-        // Version
-        memDc.SetFont(m_constant_text.version_font);
-        memDc.SetTextForeground(StateColor::darkModeColorFor(wxColor(134, 134, 134)));
-        wxSize version_ext = memDc.GetTextExtent(m_constant_text.version);
-        wxRect version_rect(
-			wxPoint(0, int(height * 0.70)),
-			wxPoint(width, int(height * 0.70) + version_ext.GetHeight())
-		);
-        memDc.DrawLabel(m_constant_text.version, version_rect, wxALIGN_CENTER);
+        const int designSize = 480;
+        auto scaleX = [width, designSize](int value) { return value * width / designSize; };
+        auto scaleY = [height, designSize](int value) { return value * height / designSize; };
 
-        // Dynamic Text
-        m_action_line_y_position = int(height * 0.83);
+        // Logo icon: 140x140, centered horizontally, y=80
+        BitmapCache bmpCache;
+        int logoSize = scaleX(140);
+        int logoX    = scaleX(170);
+        int logoY    = scaleY(80);
+        wxBitmap* logoBmp = bmpCache.load_svg("splash_app_icon", logoSize, logoSize);
+        if (logoBmp != nullptr)
+            memDc.DrawBitmap(*logoBmp, logoX, logoY, true);
 
-		// Based on Text
-        memDc.SetFont(m_constant_text.based_on_font);
-        auto bs_version = wxString::Format("Based on Orca Slicer").ToStdString();
-        wxSize based_on_ext = memDc.GetTextExtent(bs_version);
-        wxRect based_on_rect(
-			wxPoint(0, height - based_on_ext.GetHeight() * 2),
-            wxPoint(width, height - based_on_ext.GetHeight())
-		);
-        memDc.DrawLabel(bs_version, based_on_rect, wxALIGN_CENTER);
+        // Brand name: "Snapmaker Orca"
+        memDc.SetFont(m_constant_text.titleFont);
+        memDc.SetTextForeground(wxColour(23, 23, 23));
+        wxSize brandExt = memDc.GetTextExtent(m_constant_text.title);
+
+        // Version tag: "V" + current app version
+        memDc.SetFont(m_constant_text.versionFont);
+        memDc.SetTextForeground(wxColour(143, 143, 143));
+        wxSize versionExt = memDc.GetTextExtent(m_constant_text.version);
+
+        // Center brand + gap + tag as a group.
+        int gap    = scaleX(10);
+        int totalW = brandExt.GetWidth() + gap + versionExt.GetWidth();
+        int startX = (width - totalW) / 2;
+        int brandY = scaleY(241);
+        int tagY   = scaleY(251);
+
+        memDc.SetFont(m_constant_text.titleFont);
+        memDc.SetTextForeground(wxColour(23, 23, 23));
+        memDc.DrawText(m_constant_text.title, startX, brandY);
+
+        memDc.SetFont(m_constant_text.versionFont);
+        memDc.SetTextForeground(wxColour(143, 143, 143));
+        memDc.DrawText(m_constant_text.version,
+                       startX + brandExt.GetWidth() + gap,
+                       tagY);
+
+        // Dynamic text y position (for SetText)
+        m_action_line_y_position = scaleY(384);
     }
 
     static wxBitmap MakeBitmap()
@@ -450,7 +541,7 @@ public:
 
         wxMemoryDC memDC;
         memDC.SelectObject(new_bmp);
-        memDC.SetBrush(StateColor::darkModeColorFor(*wxWHITE));
+        memDC.SetBrush(wxColour(255, 255, 255));
         memDC.DrawRectangle(-1, -1, width + 2, height + 2);
         memDC.DrawBitmap(new_bmp, 0, 0, true);
         return new_bmp;
@@ -512,28 +603,19 @@ private:
     {
         wxString title;
         wxString version;
-        wxString credits;
 
-        wxFont   title_font;
-        wxFont   version_font;
-        wxFont   credits_font;
-        wxFont   based_on_font;
+        wxFont   titleFont;
+        wxFont   versionFont;
+        wxFont   loadingFont;
 
-        void init(wxFont init_font)
+        void init()
         {
-            // title
-            //title = wxGetApp().is_editor() ? SLIC3R_APP_FULL_NAME : GCODEVIEWER_APP_NAME;
+            title    = "Snapmaker Orca";
+            version  = wxString::Format("V%s %s", Snapmaker_VERSION, _L("Release"));
 
-            // dynamically get the version to display
-            version = GUI_App::format_display_version();
-
-            // credits infornation
-            credits = "";
-
-            //title_font    = Label::Head_16;
-            version_font  = Label::Body_13;
-            based_on_font = Label::Body_8;
-            credits_font  = Label::Body_8;
+            titleFont   = Label::sysFont(20, false);
+            versionFont = Label::Body_13;
+            loadingFont = Label::Body_11;
         }
     }
     m_constant_text;
@@ -788,6 +870,82 @@ static void register_win32_device_notification_event()
 }
 #endif // WIN32
 
+// Windows 11 build number threshold: build >= 22000 = Windows 11
+constexpr int kWindows11BuildNumber = 22000;
+
+static std::string read_cli_version_from_resources()
+{
+    // The gateway CLI is shipped with the Flutter web bundle. Its manifest is
+    // updated whenever the bundled CLI is updated, so it is available even
+    // before the gateway process has started and /api/health is reachable.
+    const boost::filesystem::path manifest_path =
+        boost::filesystem::path(Slic3r::resources_dir()) / "web" / "flutter_web" / "version.json";
+    boost::filesystem::ifstream stream(manifest_path, std::ios_base::in | std::ios_base::binary);
+    if (!stream)
+        return {};
+
+    const std::string manifest_body{std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
+    const auto manifest = Gateway::parse_json_object(manifest_body);
+    return manifest ? Gateway::format_cli_version(*manifest) : std::string{};
+}
+
+void GUI_App::log_version_info()
+{
+    // Cache OS description on first call so that subsequent calls from background
+    // threads (e.g. generic_exception_handle -> OnExceptionInMainLoop) do not
+    // invoke wxWidgets APIs, which are not thread-safe on Linux.
+    static std::string s_cached_os_desc;
+    static std::once_flag s_os_flag;
+    std::call_once(s_os_flag, []() {
+        std::string os_desc{};
+#if defined(__LINUX__) || defined(__linux__)
+        wxLinuxDistributionInfo distro = wxGetLinuxDistributionInfo();
+        if (!distro.Id.empty()) {
+            os_desc = distro.Id.ToStdString();
+            if (!distro.Release.empty())
+                os_desc += " " + distro.Release.ToStdString();
+        }
+#endif
+        if (os_desc.empty()) {
+            os_desc = wxGetOsDescription().ToStdString();
+        }
+
+#if defined(_WIN32)
+        // Append Windows version numbers (major.minor.build) for all Windows versions.
+        // Also correct "Windows 10" → "Windows 11" for builds >= 22000.
+        int major = 0, minor = 0, micro = 0;
+        wxGetOsVersion(&major, &minor, &micro);
+        if (micro >= kWindows11BuildNumber) {
+            size_t pos = os_desc.find("Windows 10");
+            if (pos != std::string::npos)
+                os_desc.replace(pos, 10, "Windows 11");
+        }
+        os_desc += " (" + std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(micro) + ")";
+#endif
+        s_cached_os_desc = os_desc;
+    });
+
+    BOOST_LOG_TRIVIAL(warning) << "========================================";
+    BOOST_LOG_TRIVIAL(warning) << "Snapmaker Orca Version Information";
+    BOOST_LOG_TRIVIAL(warning) << "========================================";
+
+    BOOST_LOG_TRIVIAL(warning) << "[Version] Snapmaker Orca: " << Snapmaker_VERSION
+                               << ", Build: " << SLIC3R_VERSION;
+
+    std::string profile_ver = common::get_profile_version();
+    BOOST_LOG_TRIVIAL(warning) << "[Version] Profile: " << (profile_ver.empty() ? "N/A" : profile_ver);
+
+    BOOST_LOG_TRIVIAL(warning) << "[Version] OS: " << s_cached_os_desc;
+
+    const std::string snapmaker_connect_version = read_cli_version_from_resources();
+    BOOST_LOG_TRIVIAL(warning) << "[Version] Snapmaker Connect: "
+                               << (snapmaker_connect_version.empty() ? "N/A" : snapmaker_connect_version);
+
+    BOOST_LOG_TRIVIAL(warning) << "========================================";
+
+    flush_logs();
+}
+
 static void generic_exception_handle()
 {
     // Note: Some wxWidgets APIs use wxLogError() to report errors, eg. wxImage
@@ -963,12 +1121,30 @@ void GUI_App::post_init()
             BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << "Found glcontext not ready, postpone the init";
         }
 //#endif
-        if (is_editor())
-            mainframe->select_tab(size_t(0));
-        if (app_config->get("default_page") == "1")
-            mainframe->select_tab(size_t(1));
-        mainframe->Thaw();
-        plater_->trigger_restore_project(1);
+        // A URL open already in flight loads its own project and has already selected the 3D
+        // view. Sending the user to the home page and starting a blank project would undo both.
+        // On macOS the URL arrives through MacOpenURL after launch, so it is never visible in
+        // init_params->input_files and switch_to_3d above cannot account for it. This mirrors
+        // what switch_to_3d already does on platforms that receive the URL as a launch argument.
+        if (m_url_open_pending) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", url open pending, staying on the 3D view and skipping the blank project";
+            CallAfter([this] {
+                mainframe->Thaw();
+            });
+        } else {
+            // Defer the final tab selection to after pending events are
+            // processed. During GL init, the PAGE_CHANGED handler posts
+            // EVT_GLVIEWTOOLBAR_3D which would undo a synchronous
+            // select_tab(0) and switch back to the Prepare tab.
+            CallAfter([this] {
+                if (is_editor() && app_config->get("default_page") != "1")
+                    mainframe->select_tab(size_t(0));
+                else if (app_config->get("default_page") == "1")
+                    mainframe->select_tab(size_t(1));
+                mainframe->Thaw();
+            });
+            plater_->trigger_restore_project(1);
+        }
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", end load_gl_resources";
     }
 //#endif
@@ -997,7 +1173,7 @@ void GUI_App::post_init()
         }
     }
 
-    // Start preset sync after project opened, otherwise we could have preset change during project opening which could cause crash 
+    // Start preset sync after project opened, otherwise we could have preset change during project opening which could cause crash
     if (app_config->get("sync_user_preset") == "true") {
         // BBS loading user preset
         // Always async, not such startup step
@@ -1017,18 +1193,16 @@ void GUI_App::post_init()
     // Neither wxShowEvent nor wxWindowCreateEvent work reliably.
     if (this->preset_updater) { // G-Code Viewer does not initialize preset_updater.
         CallAfter([this] {
+           
             bool cw_showed = this->config_wizard_startup();
-
-            SSWCP_MqttAgent_Instance::m_dialog = new WebPresetDialog(this);
 
             std::string http_url = get_http_url(app_config->get_country_code());
             std::string language = GUI::into_u8(current_language_code());
             std::string network_ver = Slic3r::NetworkAgent::get_version();
             bool        sys_preset  = app_config->get("sync_system_preset") == "true";
             this->preset_updater->sync(http_url, language, network_ver, sys_preset ? preset_bundle : nullptr);
-            this->preset_updater->sync_web_async(true);
-            this->check_new_version_sf(false, false);
-     
+            this->request_version_from_config(false, false);
+
         });
     }
 
@@ -1126,28 +1300,39 @@ GUI_App::GUI_App()
     , m_download_manager(&DownloadManager::getInstance())
 	, m_other_instance_message_handler(std::make_unique<OtherInstanceMessageHandler>())
 {
+    StartupProfiler profiler("GUI_App::GUI_App");
+
 	//app config initializes early becasuse it is used in instance checking in Snapmaker_Orca.cpp
     this->init_app_config();
+    profiler.mark("init_app_config");
     this->init_download_path();
+    profiler.mark("init_download_path");
 #if wxUSE_WEBVIEW_EDGE
     this->init_webview_runtime();
+    profiler.mark("init_webview_runtime");
 #endif
 
     reset_to_active();
+    profiler.mark("reset_to_active");
 
     // test
     m_page_http_server.setPort(PAGE_HTTP_PORT);
     m_page_http_server.set_request_handler(HttpServer::web_server_handle_request);
     m_page_http_server.start();
-    BOOST_LOG_TRIVIAL(info) << "[Flutter] Version:"<<common::get_flutter_version();
+    profiler.mark("m_page_http_server.start");
     BOOST_LOG_TRIVIAL(info) << "[Profile] Version:" << common::get_profile_version();
     flush_logs();
     m_fltviews.set_app(this);
+    profiler.mark("m_fltviews.set_app");
 }
 
 void GUI_App::shutdown(bool isRecreate)
 {
     BOOST_LOG_TRIVIAL(info) << "GUI_App::shutdown enter";
+
+    if (!m_is_recreating_gui)
+        m_is_closing = true;
+    stop_gateway_service();
 
 	if (m_removable_drive_manager) {
 		removable_drive_manager()->shutdown();
@@ -1158,12 +1343,6 @@ void GUI_App::shutdown(bool isRecreate)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(": destroy login dialog");
         delete login_dlg;
         login_dlg = nullptr;
-    }
-
-    if (sm_login_dlg != nullptr) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": destroy SMlogin dialog");
-        delete sm_login_dlg;
-        sm_login_dlg = nullptr;
     }
 
     if (web_device_dialog != nullptr) {
@@ -1177,14 +1356,6 @@ void GUI_App::shutdown(bool isRecreate)
         delete web_preprint_dialog;
         web_preprint_dialog = nullptr;
     }
-
-    // Delete WebPresetDialog to ensure proper cleanup
-    if (SSWCP_MqttAgent_Instance::m_dialog != nullptr && !isRecreate) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": destroy WebPresetDialog");
-        delete SSWCP_MqttAgent_Instance::m_dialog;
-        SSWCP_MqttAgent_Instance::m_dialog = nullptr;
-    }
-
 
     if (m_is_recreating_gui) return;
     m_is_closing = true;
@@ -1847,7 +2018,7 @@ void GUI_App::init_networking_callbacks()
                     else {
                         obj->parse_json(msg, true);
                     }
-                    
+
 
                     if (!this->is_enable_multi_machine()) {
                         if ((sel == obj || sel == nullptr) && obj->is_ams_need_update) {
@@ -1932,6 +2103,8 @@ GUI_App::~GUI_App()
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(": destroy preset updater");
         delete preset_updater;
     }
+
+    AllowlistManager::uninit();
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(": exit");
 
@@ -2114,6 +2287,7 @@ void GUI_App::init_app_config()
         }
 #endif // _WIN32
     }
+    MixedFilamentManager::set_auto_generate_enabled(app_config->get_bool("auto_generate_gradients"));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
@@ -2123,35 +2297,6 @@ bool GUI_App::check_older_app_config(Semver current_version, bool backup)
 {
     //BBS: current no need these logic
     return false;
-}
-
-void GUI_App::copy_web_resources() {
-    auto data_web_path = boost::filesystem::path(data_dir()) / "web";
-    if (!boost::filesystem::exists(data_web_path / "flutter_web")) {
-        auto source_path = boost::filesystem::path(resources_dir()) / "web" / "flutter_web";
-        auto target_path = data_web_path / "flutter_web";
-        copy_directory_recursively(source_path, target_path);
-    } else {
-        auto source_version_file = boost::filesystem::path(resources_dir()) / "web" / "flutter_web" / "version.json";
-        auto target_version_file = data_web_path / "flutter_web" / "version.json";
-
-        try {
-            boost::property_tree::ptree source_config, target_config;
-            boost::property_tree::read_json(source_version_file.string(), source_config);
-            boost::property_tree::read_json(target_version_file.string(), target_config);
-            std::string source_build_number_str = source_config.get<std::string>("build_number", "0");
-            std::string target_build_number_str = target_config.get<std::string>("build_number", "0");
-
-            if (source_build_number_str > target_build_number_str) {
-                auto source_path = boost::filesystem::path(resources_dir()) / "web" / "flutter_web";
-                auto target_path = data_web_path / "flutter_web";
-                copy_directory_recursively(source_path, target_path);
-            }
-        }
-        catch (std::exception& e) {
-
-        }
-    }
 }
 
 void GUI_App::copy_older_config()
@@ -2215,10 +2360,17 @@ void GUI_App::set_connect_host(const std::shared_ptr<PrintHost>& input) {
     m_cnt_hst_mtx.unlock();
 }
 
+bool GUI_App::physical_printer_connected() const
+{
+    std::lock_guard<std::mutex> lock(m_cnt_hst_mtx);
+    return m_connected_host != nullptr;
+}
+
 void GUI_App::on_start_subscribe_again(std::string dev_id)
 {
     auto start_subscribe_timer = new wxTimer(this, wxID_ANY);
     Bind(wxEVT_TIMER, [this, start_subscribe_timer, dev_id](auto& e) {
+        if (e.GetId() != start_subscribe_timer->GetId()) return;
         start_subscribe_timer->Stop();
         Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
         if (!dev) return;
@@ -2272,6 +2424,9 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    ::Slic3r::SnapLog::v1::SnapLogClient::instance().shutdown();
+
+    stop_gateway_service();
     stop_sync_user_preset();
 
     if (m_device_manager) {
@@ -2335,6 +2490,14 @@ class wxBoostLog : public wxLog
 
 bool GUI_App::on_init_inner()
 {
+#if defined(__linux__) || defined(__LINUX__)
+    // Set the C library locale from environment variables so that character
+    // encoding conversions work correctly for non-ASCII text (e.g. Chinese).
+    // This must be done early before any wxWidgets locale-sensitive operations.
+    std::setlocale(LC_ALL, "");
+#endif
+    StartupProfiler profiler("GUI_App::on_init_inner");
+
     wxLog::SetActiveTarget(new wxBoostLog());
 #if BBL_RELEASE_TO_PUBLIC
     wxLog::SetLogLevel(wxLOG_Message);
@@ -2347,6 +2510,7 @@ bool GUI_App::on_init_inner()
 #ifdef NDEBUG
     wxImage::SetDefaultLoadFlags(0); // ignore waring in release build
 #endif
+    profiler.mark("wx init/log/image handlers");
 
 #if defined(_WIN32) && ! defined(_WIN64)
     // BBS: remove 32bit build prompt
@@ -2395,7 +2559,8 @@ bool GUI_App::on_init_inner()
 #endif
 
     BOOST_LOG_TRIVIAL(info) << boost::format("gui mode, Current Snapmaker_Orca Version %1%")%Snapmaker_VERSION;
-    
+    GUI_App::log_version_info();
+
 #if defined(__WINDOWS__)
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
     m_is_arm64 = false;
@@ -2454,6 +2619,9 @@ bool GUI_App::on_init_inner()
 
     // If load_language() fails, the application closes.
     load_language(wxString(), true);
+    if (!start_gateway_service())
+        BOOST_LOG_TRIVIAL(warning) << "failed to start connection gateway during application startup";
+    profiler.mark("gateway_service.start");
 #ifdef _MSW_DARK_MODE
 
 #ifndef __WINDOWS__
@@ -2474,6 +2642,7 @@ bool GUI_App::on_init_inner()
     init_label_colours();
     init_fonts();
     wxGetApp().Update_dark_mode_flag();
+    profiler.mark("language/theme/fonts");
 
 
 #ifdef _MSW_DARK_MODE
@@ -2511,13 +2680,12 @@ bool GUI_App::on_init_inner()
             remove_old_networking_plugins();
         }
     }
+    profiler.mark("version/network plugin cleanup");
 
     if(app_config->get("version") != SLIC3R_VERSION) {
         app_config->set("version", SLIC3R_VERSION);
     }
 
-    // temporarily cancel the loading window
-    /*
     SplashScreen * scrn = nullptr;
     if (app_config->get("show_splash_screen") == "true") {
         // make a bitmap with dark grey banner on the left side
@@ -2536,20 +2704,22 @@ bool GUI_App::on_init_inner()
         //BBS use BBL splashScreen
         scrn = new SplashScreen(bmp, wxSPLASH_CENTRE_ON_SCREEN | wxSPLASH_TIMEOUT, 1500, splashscreen_pos);
         wxYield();
-        scrn->SetText(_L("Loading configuration")+ dots);
+        wxString loadingText = _L("Loading configuration");
+        std::string languageCode = app_config->get_language_code();
+        loadingText += languageCode == "zh-cn" || languageCode == "zh" ? dots + dots : dots;
+        scrn->SetText(loadingText);
     }
-    */
     BOOST_LOG_TRIVIAL(info) << "loading systen presets...";
     preset_bundle = new PresetBundle();
 
     // just checking for existence of Slic3r::data_dir is not enough : it may be an empty directory
     // supplied as argument to --datadir; in that case we should still run the wizard
     preset_bundle->setup_directories();
-
-    copy_web_resources();
+    profiler.mark("preset_bundle->setup_directories");
 
     if (m_init_app_config_from_older)
         copy_older_config();
+    profiler.mark("copy_older_config_if_needed");
 
     if (is_editor()) {
 #ifdef __WXMSW__
@@ -2584,7 +2754,7 @@ bool GUI_App::on_init_inner()
                         skip_this_version = false;
                     }
                 }
-                if (!skip_this_version || evt.GetInt() != 0) {                    
+                if (!skip_this_version || evt.GetInt() != 0) {
                     wxString            extmsg = wxString::FromUTF8(version_info.description);
                     if(!m_updateDialog)
                         return;
@@ -2594,8 +2764,8 @@ bool GUI_App::on_init_inner()
                     }
                     m_updateDialog->Raise();
                     m_updateDialog->Show();
-                    m_updateDialog->setUrl(version_info.url);                 
-                                                           
+                    m_updateDialog->setUrl(version_info.url);
+
                 }
             }
             });
@@ -2611,7 +2781,7 @@ bool GUI_App::on_init_inner()
                     false,
                     wxCENTER | wxICON_INFORMATION);
                 dialog.SetExtendedMessage(description_text);
-                
+
                 int result = dialog.ShowModal();
                 switch (result)
                 {
@@ -2623,7 +2793,7 @@ bool GUI_App::on_init_inner()
                      wxGetApp().mainframe->Close(true);
                      break;
                  case wxID_CANCEL:
-                     wxGetApp().mainframe->Close(true); 
+                     wxGetApp().mainframe->Close(true);
                      break;
                  default:
                      wxGetApp().mainframe->Close(true);
@@ -2651,12 +2821,6 @@ bool GUI_App::on_init_inner()
             dlg.ShowModal();
         });
 
-        Bind(EVT_NO_WEB_RESOURCE_UPDATE, [this](const wxCommandEvent& evt) {
-            wxString   msg = _L("This is the newest version.");
-            InfoDialog dlg(nullptr, _L("Info"), msg);
-            dlg.ShowModal();
-        });
-
         Bind(EVT_REQUEST_SERVER_FAIL, [this](const wxCommandEvent& evt) {
             wxString   msg = evt.GetString();
             InfoDialog dlg(nullptr, _L("Error"), msg);
@@ -2676,6 +2840,7 @@ bool GUI_App::on_init_inner()
     preset_bundle->set_default_suppressed(true);
 
     preset_bundle->backup_user_folder();
+    profiler.mark("preset_bundle->backup_user_folder");
 
     Bind(EVT_SHOW_IP_DIALOG, &GUI_App::show_ip_address_enter_dialog_handler, this);
 
@@ -2700,7 +2865,9 @@ bool GUI_App::on_init_inner()
         }
     } */
     copy_network_if_available();
+    profiler.mark("copy_network_if_available");
     on_init_network();
+    profiler.mark("on_init_network");
 
     if (m_agent && m_agent->is_user_login()) {
         enable_user_preset_folder(true);
@@ -2720,6 +2887,7 @@ bool GUI_App::on_init_inner()
             show_error(nullptr, ex.what());
         }
     //}
+    profiler.mark("preset_bundle->load_presets");
 
 #ifdef WIN32
 #if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)
@@ -2742,6 +2910,7 @@ bool GUI_App::on_init_inner()
             wxLaunchDefaultBrowser(downloadUlr);
         });
     }
+    profiler.mark("mainframe construction");
 
     // hide settings tabs after first Layout
     if (is_editor()) {
@@ -2767,6 +2936,7 @@ bool GUI_App::on_init_inner()
     }
     else
         load_current_presets();
+    profiler.mark("load_current_presets");
 
     if (plater_ != nullptr) {
         plater_->reset_project_dirty_initial_presets();
@@ -2779,6 +2949,7 @@ bool GUI_App::on_init_inner()
 #endif
     mainframe->Show(true);
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";
+    profiler.mark("mainframe->Show");
 
     // Home/Device Flutter UI uses http://127.0.0.1; wait until the embedded server accepts connections.
     CallAfter([this]() {
@@ -2861,65 +3032,63 @@ bool GUI_App::on_init_inner()
                        "configuration file.\nPlease note, application settings will be lost, but printer profiles will not be affected."));
     }
 
+    namespace snap = ::Slic3r::SnapLog::v1;
+    snap::SnapLogConfig snap_cfg;
+    std::string snap_cc   = app_config ? app_config->get_country_code() : "";
+    snap_cfg.gateway_base = (snap_cc.find("CN") != std::string::npos) ?
+                                "https://api.snapmaker.cn"
+                                :
+                                "https://api.snapmaker.com";
+    snap_cfg.hmac_secret = SNAP_LOG_HMAC_SECRET;
+    snap_cfg.spool_dir = (boost::filesystem::path(data_dir()) / "log_upload_spool").string();
+    std::string machine_id;
+    if (app_config) {
+        machine_id = ::Slic3r::instance_id::ensure(*app_config);
+    }
+
+    snap::SnapLogDeps deps;
+    deps.do_request            = snap::make_production_do_request(snap_cfg);
+    const bool privacy_consent = app_config && app_config->get("app", PRIVACY_POLICY_FLAGS) == "true";
+    deps.consent_ok            = [privacy_consent]() { return privacy_consent; };
+    deps.machine_id            = [mid = std::move(machine_id)]() -> std::string { return mid; };
+    deps.now_ms                = []() -> int64_t {
+        return static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    };
+
+    snap_cfg.app_version = SLIC3R_BUILD_ID;
+    snap_cfg.app_build   = GIT_COMMIT_HASH;
+#if defined(_WIN32)
+    snap_cfg.platform = "Windows";
+#elif defined(__APPLE__)
+    snap_cfg.platform = "macOS";
+#elif defined(__linux__)
+    snap_cfg.platform = "Linux";
+#else
+    snap_cfg.platform = "Unknown";
+#endif
+    snap_cfg.os_version  = wxGetOsDescription().ToUTF8().data();
+    {
+        std::random_device                          rd;
+        std::uniform_int_distribution<unsigned int> dist(0, 255);
+        char                                        hex[33];
+        for (int i = 0; i < 16; ++i) {
+            std::snprintf(hex + i * 2, 3, "%02x", dist(rd));
+        }
+        snap_cfg.session_id.assign(hex, 32);
+    }
+    snap_cfg.process_id = std::to_string(get_current_pid());
+    if (app_config) {
+        snap_cfg.region = app_config->get_country_code();
+    }
+    snap_cfg.home_for_redact = data_dir();
+
+    snap::SnapLogClient::instance().init(std::move(deps), std::move(snap_cfg));
+    BOOST_LOG_TRIVIAL(info) << "SnapLogClient initialized";
+
+    profiler.mark("on_init_inner return");
+
     return true;
-}
-
-void GUI_App::machine_find()
-{
-    std::vector<std::string> mdns_service_names;
-
-    mdns_service_names.push_back("snapmaker");
-
-    Bonjour::TxtKeys txt_keys   = {"sn", "version", "machine_type"};
-    std::string      unique_key = "sn";
-
-    m_machine_find_engine = Bonjour("snapmaker")
-                                .set_txt_keys(std::move(txt_keys))
-                                .set_retries(3)
-                                .set_timeout(10)
-                                .on_reply([this](BonjourReply&& reply) {
-                                    if (!GUI_App::m_app_alive.load())
-                                        return;
-                                    std::string hostname = reply.hostname;
-                                    size_t      pos      = hostname.find(".local");
-                                    if (pos != std::string::npos) {
-                                        hostname = hostname.substr(0, pos);
-                                    }
-                                    std::string ip = reply.ip.to_string();
-
-                                    if (reply.txt_data.count("sn")) {
-                                        std::string sn = reply.txt_data["sn"];
-                                        DeviceInfo  info;
-                                        if (app_config->get_device_info(sn, info)) {
-                                            if (info.ip != ip && info.link_mode != "wan") {
-                                                info.ip = ip;
-                                                app_config->save_device_info(info);
-
-                                                this->CallAfter([this]() {
-                                                    auto devices = app_config->get_devices();
-                                                    json param;
-                                                    param["command"]       = "local_devices_arrived";
-                                                    param["sequece_id"]    = "10001";
-                                                    param["data"]          = devices;
-                                                    std::string logout_cmd = param.dump();
-                                                    wxString    strJS      = wxString::Format("window.postMessage(%s)", logout_cmd);
-                                                    GUI::wxGetApp().run_script(strJS);
-
-                                                    // wcp订阅
-                                                    json data = this->app_config->get_devices();
-                                                    wxGetApp().device_card_notify(data);
-                                                    
-                                                });
-                                            }
-                                        }
-                                    }
-                                })
-                                .on_complete([this]() {
-                                    if (!GUI_App::m_app_alive.load())
-                                        return;
-                                    reset_machine_find_engine();
-                                })
-                                .lookup();
 }
 
 void GUI_App::copy_network_if_available()
@@ -3006,16 +3175,21 @@ void GUI_App::copy_network_if_available()
 
 bool GUI_App::on_init_network(bool try_backup)
 {
+    StartupProfiler profiler("GUI_App::on_init_network");
+
     bool create_network_agent = false;
     auto should_load_networking_plugin = app_config->get_bool("installed_networking");
     if(!should_load_networking_plugin) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "Don't load plugin as installed_networking is false";
+        profiler.note("installed_networking=false, plugin load skipped");
     } else {
     int load_agent_dll = Slic3r::NetworkAgent::initialize_network_module();
+    profiler.mark("NetworkAgent::initialize_network_module");
 __retry:
     if (!load_agent_dll) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": on_init_network, load dll ok";
         if (check_networking_version()) {
+            profiler.mark("check_networking_version");
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": on_init_network, compatibility version";
             auto bambu_source = Slic3r::NetworkAgent::get_bambu_source_entry();
             if (!bambu_source) {
@@ -3032,6 +3206,7 @@ __retry:
                 int result = Slic3r::NetworkAgent::unload_network_module();
                 BOOST_LOG_TRIVIAL(info) << "on_init_network, version mismatch, unload_network_module, result = " << result;
                 load_agent_dll = Slic3r::NetworkAgent::initialize_network_module(true);
+                profiler.mark("initialize_network_module(backup)");
                 try_backup = false;
                 goto __retry;
             }
@@ -3098,6 +3273,7 @@ __retry:
             std::string country_code = app_config->get_country_code();
             m_agent->set_country_code(country_code);
             m_agent->start();
+            profiler.mark("m_agent->start");
         }
     }
     else {
@@ -3110,6 +3286,8 @@ __retry:
         if (!m_user_manager)
             m_user_manager = new Slic3r::UserManager();
     }
+
+    profiler.note(std::string("create_network_agent=") + (create_network_agent ? "true" : "false"));
 
     return true;
 }
@@ -3232,6 +3410,16 @@ static bool is_default(wxWindow* win)
 
 void GUI_App::UpdateDarkUI(wxWindow* window, bool highlited/* = false*/, bool just_font/* = false*/)
 {
+    // SideButton manages its own per-state colors via StateColor and adapts
+    // them to the theme at paint time (StateColor::colorForStates runs the
+    // dark palette). Its SetBackgroundColour/SetForegroundColour overrides
+    // replace the WHOLE state table with one color, so letting this walker
+    // touch it permanently flattens the enabled/disabled/hover colors —
+    // seen when toggling dark mode off: the slice/print buttons keep a
+    // washed-out single background until the app restarts.
+    if (dynamic_cast<SideButton*>(window))
+        return;
+
     if (wxButton *btn = dynamic_cast<wxButton*>(window)) {
         if (btn->GetWindowStyleFlag() & wxBU_AUTODRAW)
             return;
@@ -3599,6 +3787,7 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
     update_http_extra_header();
 
     mainframe->shutdown(true);
+    start_gateway_service(true);
 
     ProgressDialog dlg(msg_name, msg_name, 100, nullptr, wxPD_AUTO_HIDE);
     dlg.Pulse();
@@ -3653,19 +3842,8 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
 
     m_is_recreating_gui = false;
 
-    //reload home and device page
+    // Reload native views after the main frame has been recreated.
     sm_disconnect_current_machine(true);
-    auto devices = wxGetApp().app_config->get_devices();
-    for (auto iter = devices.begin(); iter != devices.end();) {
-        if (iter->link_mode == "wan") {
-            iter = devices.erase(iter);
-        } else {
-            iter++;
-        }
-    }
-
-    bool use_new_connection = wxGetApp().app_config->get("use_new_connect") == "true";
-    const auto& edit_preset = preset_bundle->printers.get_edited_preset();
 
     auto printer_config    = wxGetApp().preset_bundle->printers.get_edited_preset().config;
     auto printer_model_opt = printer_config.option<ConfigOptionString>("printer_model");
@@ -3674,12 +3852,11 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
         std::string printer_model = printer_model_opt->value;
         is_snapmaker_u1           = boost::icontains(printer_model, "Snapmaker") && boost::icontains(printer_model, "U1");
     }
-    
+
     if (!preset_bundle->is_bbl_vendor()) {
         if (is_snapmaker_u1) {
-            wxString url      = flutter_web_url("2");
-            auto     real_url = wxGetApp().get_international_url(url);
-            mainframe->load_printer_url(real_url);
+            wxString url = wxGetApp().gateway_web_url("device_control");
+            mainframe->load_printer_url(url);
         } else {
             std::string base_url = LOCALHOST_URL + std::to_string(wxGetApp().m_page_http_server.get_port());
             auto url = wxString::Format("%s/web/orca/missing_connection.html", from_u8(base_url));
@@ -3687,8 +3864,6 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
         }
     }
 
-    wxGetApp().device_card_notify(devices);
-    
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "recreate_GUI exit";
 }
 
@@ -3708,6 +3883,7 @@ void GUI_App::keyboard_shortcuts()
 void GUI_App::ShowUserGuide() {
     // BBS:Show NewUser Guide
     try {
+        const std::string locale_before_wizard = gateway_locale();
         bool res = false;
         GuideFrame GuideDlg(this);
                 //if (GuideDlg.IsFirstUse())
@@ -3717,7 +3893,7 @@ if (res) {
             update_publish_status();
             mainframe->refresh_plugin_tips();
 
-            m_fltviews.reload_all();
+            sync_gateway_region_after_wizard(locale_before_wizard);
             // BBS: remove SLA related message
         }
     } catch (std::exception &) {
@@ -3777,8 +3953,6 @@ void GUI_App::ShowOnlyFilament() {
         // wxMessageBox(e.what(), "", MB_OK);
     }
 }
-
-
 
 // static method accepting a wxWindow object as first parameter
 bool GUI_App::catch_error(std::function<void()> cb,
@@ -3900,7 +4074,7 @@ void GUI_App::load_project(wxWindow *parent, wxString& input_file) const
     input_file.Clear();
     wxFileDialog dialog(parent ? parent : GetTopWindow(),
         _L("Choose one file (3mf):"),
-        app_config->get_last_dir(), "",
+        from_u8(app_config->get_last_dir()), "",
         file_wildcards(FT_PROJECT), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 
     if (dialog.ShowModal() == wxID_OK)
@@ -3939,7 +4113,7 @@ void GUI_App::load_gcode(wxWindow* parent, wxString& input_file) const
     input_file.Clear();
     wxFileDialog dialog(parent ? parent : GetTopWindow(),
         _L("Choose one file (gcode/3mf):"),
-        app_config->get_last_dir(), "",
+        from_u8(app_config->get_last_dir()), "",
         file_wildcards(FT_GCODE), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 
     if (dialog.ShowModal() == wxID_OK)
@@ -3972,98 +4146,42 @@ void GUI_App::import_presets()
     }
 }
 
-void GUI_App::import_flutter_web() {
-    if (preset_updater) {
-        preset_updater->import_flutter_web();
-    } else {
-        MessageDialog(nullptr, _L("import failed!")).ShowModal();
-    }
-}
-
-// SM
-void GUI_App::sm_get_login_info() {
-    if (!m_login_userinfo.is_user_login() || m_login_userinfo.get_user_name().empty()) {
-        // default
-        json param;
-        param["command"] = "studio_useroffline";
-        param["sequece_id"] = "10001";
-        std::string logout_cmd = param.dump();
-        wxString    strJS      = wxString::Format("window.postMessage(%s)", logout_cmd);
-        GUI::wxGetApp().run_script(strJS);
-    } else {
-        json param;
-        param["command"]    = "studio_userlogin";
-        param["sequece_id"] = "10001";
-        json data;
-        data["avatar"] = m_login_userinfo.get_user_icon_url();
-        data["name"]   = m_login_userinfo.get_user_name();
-        param["data"]  = data;
-        std::string login_cmd = param.dump();
-        wxString    strJS      = wxString::Format("window.postMessage(%s)", login_cmd);
-        GUI::wxGetApp().run_script(strJS);
-    }
-    mainframe->m_webview->SetLoginPanelVisibility(true);
-}
-
-void GUI_App::sm_request_login(bool show_user_info)
+// SM login state is owned by the connection gateway; mirror its account frames
+// for native consumers (SnapLog identity, region-switch hint).
+void GUI_App::apply_gateway_account(const Gateway::AccountSnapshot& snapshot)
 {
-    sm_ShowUserLogin(show_user_info);
-
-    if (show_user_info) {
-        sm_get_login_info();
-    }
-
+    const bool login_changed = snapshot.is_login != m_gateway_account.is_login;
+    m_gateway_account         = snapshot;
+    BOOST_LOG_TRIVIAL(info) << "[gateway][account] " << (login_changed ? "login state changed: " : "account updated: ")
+                            << (snapshot.is_login ? "online" : "offline") << ", userid=" << snapshot.userid
+                            << ", nickname_present=" << std::boolalpha << !snapshot.nickname.empty();
+    ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_token(snapshot.token);
+    ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_id(snapshot.userid);
 }
 
-void GUI_App::sm_ShowUserLogin(bool show)
+void GUI_App::refresh_gateway_account()
 {
-    // BBS: User Login Dialog
-    if (show) {
-        try {
-            if (!sm_login_dlg)
-                sm_login_dlg = new SMUserLogin();
-            else {
-                delete sm_login_dlg;
-                sm_login_dlg = new SMUserLogin();
+    if (!m_gateway_service)
+        return;
+
+    const auto gateway = m_gateway_service;
+    const std::uint64_t generation = ++m_gateway_account_refresh_generation;
+    m_gateway_account_refresh_workers.emplace_back([this, gateway, generation]() {
+        const Gateway::GatewayService::ApiResult result = gateway->get_account();
+        CallAfter([this, generation, result]() {
+            if (m_is_closing || generation != m_gateway_account_refresh_generation.load())
+                return;
+            if (result.error) {
+                BOOST_LOG_TRIVIAL(warning) << "[gateway][account] GET /api/account failed: " << result.error.message;
+                return;
             }
-            sm_login_dlg->ShowModal();
-        } catch (std::exception&) {
-            ;
-        }
-    } else {
-        try {
-            if (!sm_login_dlg)
-                sm_login_dlg = new SMUserLogin();
-            else {
-                delete sm_login_dlg;
-                sm_login_dlg = new SMUserLogin();
-            }
-        }
-        catch (std::exception&) {
-            ;
-        }
-    }
-}
-
-void GUI_App::sm_request_user_logout()
-{
-    if (m_login_userinfo.is_user_login()) {
-        m_login_userinfo.set_user_login(false);
-    }
-    try {
-        wxString region = wxString::FromUTF8(app_config->get_country_code());
-        std::string url    = "";
-        if (region == "CN") {
-            url = "https://api.snapmaker.cn/api/oauth2/revoke";
-        } else {
-            url = "https://id.snapmaker.com/api/oauth2/revoke";
-        }
-
-        Http http = Http::post(url);
-        http.form_add("token", m_login_userinfo.get_user_token()).perform();
-    } catch (std::exception&) {
-        ;
-    }
+            Gateway::AccountSnapshot snapshot;
+            if (Gateway::GatewayAccount::parse(result.value, snapshot))
+                apply_gateway_account(snapshot);
+            else
+                BOOST_LOG_TRIVIAL(warning) << "[gateway][account] invalid /api/account response";
+        });
+    });
 }
 
 //BBS
@@ -4092,59 +4210,6 @@ void GUI_App::get_login_info()
         }
         mainframe->m_webview->SetLoginPanelVisibility(true);
     }
-}
-
-namespace {
-void ensure_flutter_web_in_data_dir()
-{
-    namespace fs = boost::filesystem;
-    const auto target_path = fs::path(Slic3r::data_dir()) / "web" / "flutter_web";
-    if (fs::exists(target_path / "index.html"))
-        return;
-    const auto source_path = fs::path(Slic3r::resources_dir()) / "web" / "flutter_web";
-    if (!fs::exists(source_path))
-        return;
-    copy_directory_recursively(source_path, target_path);
-}
-
-} // namespace
-
-wxString GUI_App::flutter_web_url(const std::string& path_query) const
-{
-    ensure_flutter_web_in_data_dir();
-    return wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) +
-                              "/web/flutter_web/index.html?path=" + path_query);
-}
-
-bool GUI_App::is_page_http_server_ready()
-{
-    return m_page_http_server.is_healthy();
-}
-
-wxString GUI_App::get_international_url(const wxString& origin_url) {
-
-    wxString baseUrl = origin_url;
-    if (baseUrl.find("?locale=") != std::string::npos) {
-        baseUrl = baseUrl.substr(0, baseUrl.find("?locale="));
-    } else if (baseUrl.find("&locale=") != std::string::npos) {
-        baseUrl = baseUrl.substr(0, baseUrl.find("&locale="));
-    }
-    wxString lang = wxString::FromUTF8(app_config->get_language_code());
-    wxString region = wxString::FromUTF8(app_config->get_country_code());
-    if (region == "Others") {
-        region = "US";
-    }
-
-    string dark_mode = wxGetApp().app_config->get("dark_color_mode");
-
-    if (baseUrl.find("?") != std::string::npos) {
-        return baseUrl + wxString::FromUTF8("&locale=") + lang + wxString::FromUTF8("-") + region +
-               wxString::FromUTF8("&dark_mode=" + dark_mode);
-    } else {
-        return baseUrl + wxString::FromUTF8("?locale=") + lang + wxString::FromUTF8("-") + region +
-               wxString::FromUTF8("&dark_mode=" + dark_mode);
-    }
-
 }
 
 bool GUI_App::is_user_login()
@@ -4377,17 +4442,17 @@ std::string GUI_App::handle_web_request(std::string cmd)
                 if (path.has_value()) {
                     wxLaunchDefaultBrowser(path.value());
                 }
-            } 
+            }
             else if (command_str.compare("homepage_makerlab_get") == 0) {
                 //if (mainframe->m_webview) { mainframe->m_webview->SendMakerlabList(); }
             }
-            else if (command_str.compare("makerworld_model_open") == 0) 
+            else if (command_str.compare("makerworld_model_open") == 0)
             {
                 if (root.get_child_optional("model") != boost::none) {
                     pt::ptree                    data_node = root.get_child("model");
                     boost::optional<std::string> path      = data_node.get_optional<std::string>("url");
-                    if (path.has_value()) 
-                    { 
+                    if (path.has_value())
+                    {
                         wxString realurl = from_u8(url_decode(path.value()));
                         wxGetApp().request_model_download(realurl);
                     }
@@ -4444,7 +4509,7 @@ void GUI_App::request_open_project(std::string project_id)
         CallAfter([this, project_id] { mainframe->open_recent_project(-1, wxString::FromUTF8(project_id)); });
 }
 
-void GUI_App::sm_request_remove_project(std::string project_id) 
+void GUI_App::sm_request_remove_project(std::string project_id)
 {
     mainframe->sm_remove_recent_project(wxString::FromUTF8(project_id));
 }
@@ -4631,12 +4696,10 @@ std::string detect_updater_os_info()
         description = wxGetOsDescription();
 
     //Orca: workaround: wxGetOsVersion can't recognize Windows 11
-    // For Windows, use actual version numbers to properly detect Windows 11
-    // Windows 11 starts at build 22000
 #if defined(_WIN32)
     int major = 0, minor = 0, micro = 0;
     wxGetOsVersion(&major, &minor, &micro);
-    if (micro >= 22000) {
+    if (micro >= kWindows11BuildNumber) {
         // replace Windows 10 with Windows 11
         description.Replace("Windows 10", "Windows 11");
     }
@@ -4831,14 +4894,8 @@ void maybe_attach_updater_signature(Http& http, const std::string& canonical_que
 
 } // namespace
 
-void GUI_App::check_web_version()
-{
-    if (preset_updater != nullptr)
-        preset_updater->sync_web_async();
-}
-
 void GUI_App::check_preset_version()
-{    
+{
     if (preset_updater != nullptr)
         preset_updater->sync_config_async();
 }
@@ -4906,11 +4963,11 @@ void GUI_App::check_new_version_sf(bool show_tips, bool by_user)
             if (platformType == "win") {
                 fileSize   = defaultObj.value("file_size", 0);
                 fileMd5    = defaultObj.value("file_md5", "");
-                fileSha256 = defaultObj.value("file_sha256", "");            
-                version_info.url         = defaultObj.value("file_url", "");            
+                fileSha256 = defaultObj.value("file_sha256", "");
+                version_info.url         = defaultObj.value("file_url", "");
 
                 reservedData             = defaultObj.value("reserved_1", "");
-                reservedData2            = defaultObj.value("reserved_2", "");         
+                reservedData2            = defaultObj.value("reserved_2", "");
             }
             else if (platformType == "mac")
             {
@@ -4939,8 +4996,8 @@ void GUI_App::check_new_version_sf(bool show_tips, bool by_user)
                 version_info.url = platformObj.value("file_url", "");
 
                 reservedData  = platformObj.value("reserved_1", "");
-                reservedData2 = platformObj.value("reserved_2", "");  
-                
+                reservedData2 = platformObj.value("reserved_2", "");
+
             }
             else
             {
@@ -4977,8 +5034,226 @@ void GUI_App::check_new_version_sf(bool show_tips, bool by_user)
             GUI::wxGetApp().QueueEvent(evt);
         } catch (const std::exception& ex) {
             std::string errorMsg = ex.what();
-            BOOST_LOG_TRIVIAL(fatal) << "request server soft update data error:" << errorMsg;            
+            BOOST_LOG_TRIVIAL(fatal) << "request server soft update data error:" << errorMsg;
           }
+        })
+        .perform();
+}
+
+void GUI_App::request_version_from_config(bool show_tips, bool by_user)
+{
+    std::string url = app_config->get_config_api_url();
+
+    json req;
+    // appName encodes the platform (server contract): the config backend hosts two apps,
+    // snapmaker-orca-win / snapmaker-orca-mac, each with its own default + gray configs.
+#if defined(_WIN32)
+    req["appName"] = "snapmaker-orca-win";
+    const std::string client_platform_type = "win";
+#elif defined(__APPLE__)
+    req["appName"] = "snapmaker-orca-mac";
+    const std::string client_platform_type = "mac";
+#else
+    req["appName"] = "snapmaker-orca";
+    const std::string client_platform_type = "";
+#endif
+    // Three numeric segments (e.g. "2.4.0"): the server compares version levels numerically
+    // (versionInRange), so the zero-padded four-segment form must not be sent here.
+    req["version"] = std::string(Snapmaker_VERSION);
+    // Same source as the global X-BBL-Device-ID header (slicer_uuid), the gray bucketing key.
+    // The body carries no userId by contract: the gateway derives it from the Authorization
+    // token below and injects it into rule evaluation server-side.
+    req["deviceId"]   = app_config->get("slicer_uuid");
+    std::string req_body = req.dump();
+
+    // Type-guarded readers: unlike value(), a wrong-typed field is treated as missing
+    // instead of raising type_error.302 (e.g. a string "200" where a number is expected).
+    auto str_field  = [](const json& j, const char* key) -> std::string {
+        auto it = j.find(key);
+        return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    auto flag_field = [](const json& j, const char* key) -> bool {
+        auto it = j.find(key);
+        return it != j.end() && it->is_boolean() ? it->get<bool>() : false;
+    };
+    auto obj_field  = [](const json& j, const char* key) -> json {
+        auto it = j.find(key);
+        return it != j.end() && it->is_object() ? *it : json::object();
+    };
+
+    auto http = Http::post(url);
+    http.header("Content-Type", "application/json");
+    // Gateway auth (snapmaker-config): the SM account JWT goes in Authorization as a raw
+    // token, no "Bearer " prefix — same convention as the SM login requests. The gateway
+    // resolves the gray-rule variable userId from it; anonymous requests stay valid
+    // (update check must work without login) and rules evaluate with userId = nil.
+    // The account token must never travel over plaintext http — the orca_config_api_url
+    // override can point at any URL. Internal testing builds are the only exception,
+    // because the dev gateway has no TLS.
+    bool allow_http_auth = false;
+#if BBL_INTERNAL_TESTING
+    allow_http_auth = true;
+#endif
+    bool with_auth = false;
+    const Gateway::AccountSnapshot& account = m_gateway_account;
+    if (account.is_login) {
+        const std::string& auth_token = account.token;
+        if (!auth_token.empty()) {
+            if (url.rfind("https://", 0) == 0 || allow_http_auth) {
+                http.header("Authorization", auth_token);
+                with_auth = true;
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "config/get: refusing to send Authorization over non-https URL";
+            }
+        }
+    }
+    // Normal-path diagnostics stay at info so the release warning stream is reserved
+    // for anomalies; failure paths log at warning.
+    BOOST_LOG_TRIVIAL(info) << format("config/get: posting to `%1%` %2%, deviceId `%3%`", url, with_auth ? "with Authorization" : "anonymously", req["deviceId"].get<std::string>());
+    http.set_post_body(req_body)
+        .timeout_connect(TIMEOUT_CONNECT)
+        // Total timeout: a stalled transfer after a successful connect must still
+        // trigger the static fallback (CURLOPT_TIMEOUT defaults to unlimited).
+        .timeout_max(30)
+        .on_error([this, show_tips, by_user](std::string body, std::string error, unsigned http_status) {
+            (void)body;
+            BOOST_LOG_TRIVIAL(warning) << format("Error posting: `%1%`: HTTP %2%, %3%, fallback to static version.json", "config/get", http_status, error);
+            check_new_version_sf(show_tips, by_user);
+        })
+        .on_complete([this, show_tips, by_user, str_field, flag_field, obj_field, client_platform_type](std::string body, unsigned http_status) {
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(warning) << format("status not 200 with: `%1%`: HTTP %2%, fallback to static version.json", "config/get", http_status);
+                check_new_version_sf(show_tips, by_user);
+                return;
+            }
+            // allow_exceptions = false: a malformed or non-UTF-8 body yields a discarded value
+            // (never an exception) and degrades to the static check. A document that parses
+            // successfully is valid UTF-8 by construction, so every string below is FromUTF8-safe.
+            json jsonObj = json::parse(body, nullptr, false);
+            if (jsonObj.is_discarded() || !jsonObj.is_object()) {
+                BOOST_LOG_TRIVIAL(warning) << "config/get body is not valid JSON/UTF-8, fallback to static version.json";
+                check_new_version_sf(show_tips, by_user);
+                return;
+            }
+
+            // Server contract: 40001 = no default config, 604001 = bad params, 50001 = internal error
+            int  errCode = 0;
+            auto code_it = jsonObj.find("code");
+            if (code_it != jsonObj.end() && code_it->is_number_integer())
+                errCode = code_it->get<int>();
+            if (errCode != 200 || !jsonObj.contains("data") || !jsonObj["data"].is_object()) {
+                BOOST_LOG_TRIVIAL(warning) << format("config/get rejected: code %1%, msg %2%, fallback to static version.json", errCode, str_field(jsonObj, "msg"));
+                check_new_version_sf(show_tips, by_user);
+                return;
+            }
+
+            // The payload mirrors the data object of the static version.json.
+            // A malformed payload (missing/invalid required fields) must degrade to the
+            // static channel instead of silently suppressing the update check: a
+            // misconfigured gray release may never be worse than static-only behavior.
+            auto reject_payload = [this, show_tips, by_user](const char* reason) {
+                BOOST_LOG_TRIVIAL(warning) << format("config/get payload rejected: %1%, fallback to static version.json", reason);
+                check_new_version_sf(show_tips, by_user);
+            };
+
+            const json dataObj = jsonObj["data"];
+
+            std::string releaseType = str_field(dataObj, "release_type");
+            if (releaseType.empty())
+                return reject_payload("release_type missing");
+
+            bool isForceUpgrade         = flag_field(dataObj, "is_force_upgrade");
+            version_info.force_upgrade  = isForceUpgrade;
+            version_info.version_str    = str_field(dataObj, "version");
+
+            // An explicitly non-stable release is a server-side decision, not a malformed
+            // payload: ignore it exactly like the static check ignores non-stable channels.
+            if (releaseType != RELEASE_TYPE_STABLE)
+            {
+                if (by_user)
+                    this->no_new_version();
+                return;
+            }
+
+            std::regex matcher("[0-9]+\\.[0-9]+(\\.[0-9]+)*(-[A-Za-z0-9]+)?(\\+[A-Za-z0-9]+)?");
+            Semver     current_version = get_version(Snapmaker_VERSION, matcher);
+            Semver     server_version  = get_version(version_info.version_str, matcher);
+            if (!server_version.valid())
+                return reject_payload("version missing or unparsable");
+
+            std::string platformType = str_field(dataObj, "platform_type");
+            // The payload must target the platform this build was compiled for (same
+            // mapping as appName): the server routes by appName, so a mismatched
+            // platform_type would offer the user another platform's installer.
+            if (platformType != client_platform_type)
+                return reject_payload("platform_type mismatch for this build");
+
+            // win x86_x64,  mac arm/x86_64  universal
+            json fullObj      = obj_field(dataObj, "full");
+            json defaultObj   = obj_field(fullObj, "default");
+            json armObj       = obj_field(fullObj, "arm");
+            json intelObj     = obj_field(fullObj, "intel");
+            version_info.description = str_field(fullObj, "file_describe");
+
+            if (platformType == "win") {
+                version_info.url         = str_field(defaultObj, "file_url");
+            }
+            else if (platformType == "mac")
+            {
+                bool isArm64 = false;
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+                isArm64 = true;
+#else
+                isArm64 = false;
+#endif
+                json platformObj = defaultObj;
+                if (isArm64) {
+                    if (!armObj.empty()) {
+                        platformObj = armObj;
+                    }
+                }
+                else
+                {
+                    if (!intelObj.empty()) {
+                        platformObj = intelObj;
+                    }
+                }
+
+                version_info.url = str_field(platformObj, "file_url");
+            }
+            else
+            {
+                return reject_payload("unsupported platform_type");
+            }
+
+            // A payload without file_url must not open the update dialog:
+            // clicking download would launch the browser with an empty address.
+            if (version_info.url.empty()) {
+                return reject_payload("file_url missing");
+            }
+
+            if (current_version >= server_version) {
+                if(by_user)
+                    this->no_new_version();
+                return;
+            }
+
+            if (isForceUpgrade)
+            {
+                wxGetApp().app_config->set_bool("force_upgrade", version_info.force_upgrade);
+                wxGetApp().app_config->set("upgrade", "force_upgrade", true);
+                wxGetApp().app_config->set("upgrade", "description", version_info.description);
+                wxGetApp().app_config->set("upgrade", "version", version_info.version_str);
+                wxGetApp().app_config->set("upgrade", "url", version_info.url);
+                GUI::wxGetApp().enter_force_upgrade();
+                return;
+            }
+
+            wxCommandEvent* evt = new wxCommandEvent(EVT_SLIC3R_VERSION_ONLINE);
+            evt->SetString(version_info.url);
+            if (by_user)
+                evt->SetInt(UPDATE_BY_USER);
+            GUI::wxGetApp().QueueEvent(evt);
         })
         .perform();
 }
@@ -5034,7 +5309,7 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = Snapmaker_VERSION;
+    version_display = std::string("Snapmaker Orca ") + Snapmaker_VERSION;
     return version_display;
 }
 
@@ -5410,10 +5685,339 @@ void GUI_App::stop_sync_user_preset()
 //    m_http_server.stop();
 //}
 
-void GUI_App::start_page_http_server() 
+void GUI_App::start_page_http_server()
 {
     if (!m_page_http_server.is_started())
         m_page_http_server.start();
+}
+
+std::string GUI_App::gateway_locale() const
+{
+    std::string locale = app_config != nullptr ? app_config->get("language") : std::string{};
+    if (locale.empty())
+        locale = into_u8(current_language_code_safe());
+
+    const std::size_t separator = locale.find_first_of("-_");
+    std::string       language  = separator == std::string::npos ? locale : locale.substr(0, separator);
+    std::transform(language.begin(), language.end(), language.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (language != "zh")
+        language = "en";
+
+    std::string region = app_config != nullptr ? app_config->get_country_code() : "US";
+    if (region != "CN")
+        region = "US";
+
+    return language + "-" + region;
+}
+
+bool GUI_App::start_gateway_service(bool restart)
+{
+    if (m_gateway_service && !restart)
+        return true;
+
+    if (restart)
+        stop_gateway_service();
+
+    try {
+        Gateway::GatewayService::Dependencies dependencies;
+        const boost::filesystem::path connection_cli_path =
+            boost::filesystem::path{Slic3r::resources_dir()} / Gateway::ConnectionProcessManager::cli_executable_name();
+        dependencies.process_manager =
+            std::make_shared<Gateway::ConnectionProcessManager>(Gateway::ConnectionProcessManager::Config{connection_cli_path});
+        dependencies.http      = std::make_shared<Gateway::LibcurlHttpTransport>();
+        dependencies.websocket = std::make_shared<Gateway::GatewayWebSocketTransport>();
+        dependencies.dispatcher = [this](std::function<void()> task) {
+            // A task may still be pending when shutdown starts; do not touch dying GUI windows.
+            CallAfter([this, task = std::move(task)]() mutable {
+                if (m_is_closing)
+                    return;
+                task();
+            });
+        };
+
+        m_gateway_service = std::make_shared<Gateway::GatewayService>(Gateway::GatewayService::Config{}, std::move(dependencies));
+        m_gateway_device  = GatewayDeviceState{};
+        if (preset_bundle != nullptr)
+            clear_gateway_machine_slots();
+        m_gateway_loaded_base_url.clear();
+        register_gateway_notifications();
+        const std::string locale = gateway_locale();
+        BOOST_LOG_TRIVIAL(info) << "starting connection gateway with locale " << locale;
+        if (!m_gateway_service->start(locale))
+            return false;
+        BOOST_LOG_TRIVIAL(info) << "connection gateway startup requested";
+        return true;
+    } catch (const std::exception& exception) {
+        BOOST_LOG_TRIVIAL(error) << "failed to start connection gateway: " << exception.what();
+        m_gateway_service.reset();
+        return false;
+    }
+}
+
+void GUI_App::stop_gateway_service()
+{
+    ++m_gateway_account_refresh_generation;
+    for (std::thread& worker : m_gateway_account_refresh_workers)
+        if (worker.joinable())
+            worker.join();
+    m_gateway_account_refresh_workers.clear();
+
+    if (m_gateway_service)
+        m_gateway_service->stop();
+    m_gateway_service.reset();
+    clear_gateway_device();
+}
+
+bool GUI_App::gateway_device_connected() const { return m_gateway_device.connected && !m_gateway_device.serial_number.empty(); }
+
+void GUI_App::query_gateway_current_device()
+{
+    if (!m_gateway_service)
+        return;
+
+    const std::uint64_t generation = m_gateway_device.generation;
+    m_gateway_service->request("query.device.current", nlohmann::json::object(),
+                               [this, generation](Gateway::GatewayError error, const nlohmann::json& result) {
+                                   if (generation != m_gateway_device.generation)
+                                       return;
+
+                                   if (error) {
+                                       BOOST_LOG_TRIVIAL(warning)
+                                           << "[gateway][device-status] failed to query current device: " << error.message;
+                                       m_gateway_device.connected = false;
+                                       if (mainframe != nullptr && mainframe->plater() != nullptr)
+                                           mainframe->plater()->sidebar().update_all_preset_comboboxes(false);
+                                       return;
+                                   }
+
+                                   const auto current_device = Gateway::parse_current_device(result);
+                                   if (!current_device.has_value() || !current_device->valid) {
+                                       BOOST_LOG_TRIVIAL(warning) << "[gateway][device-status] current device response is invalid";
+                                       m_gateway_device.connected = false;
+                                       return;
+                                   }
+                                   if (!current_device->connected || current_device->serial_number.empty()) {
+                                       clear_gateway_device();
+                                       return;
+                                   }
+
+                                   const bool device_changed = m_gateway_device.serial_number != current_device->serial_number;
+                                   if (device_changed) {
+                                       clear_gateway_device();
+                                       m_gateway_device.generation = generation + 1;
+                                   }
+                                   m_gateway_device.serial_number = current_device->serial_number;
+                                   m_gateway_device.connected     = true;
+                                   BOOST_LOG_TRIVIAL(info)
+                                       << "[gateway][device-status] current device applied, sn=" << m_gateway_device.serial_number;
+
+                                   if (mainframe != nullptr && mainframe->plater() != nullptr)
+                                       mainframe->plater()->sidebar().update_all_preset_comboboxes(false);
+                                   query_gateway_device_objects();
+
+                                   if (m_gateway_device.watched_serial_number == current_device->serial_number)
+                                       return;
+                                   const std::string serial_number        = current_device->serial_number;
+                                   m_gateway_device.watched_serial_number = serial_number;
+                                   m_gateway_service->watch_device(nlohmann::json{{"sn", serial_number}},
+                                                                   [serial_number](Gateway::GatewayError watch_error,
+                                                                                   const nlohmann::json& watch_result) {
+                                                                       if (watch_error)
+                                                                           BOOST_LOG_TRIVIAL(warning)
+                                                                               << "[gateway][device-status] failed to watch device "
+                                                                               << serial_number << ": " << watch_error.message;
+                                                                       else
+                                                                           BOOST_LOG_TRIVIAL(info)
+                                                                               << "[gateway][device-status] watching device "
+                                                                               << serial_number << ", result=" << watch_result.dump();
+                                                                   });
+                               });
+}
+
+void GUI_App::query_gateway_device_objects()
+{
+    if (!m_gateway_service || !m_gateway_device.connected || m_gateway_device.serial_number.empty())
+        return;
+    if (m_gateway_device.objects_query_active) {
+        m_gateway_device.objects_refresh_pending = true;
+        return;
+    }
+
+    m_gateway_device.objects_query_active = true;
+    const std::uint64_t generation        = m_gateway_device.generation;
+    const std::string   serial_number     = m_gateway_device.serial_number;
+    m_gateway_service->request("query.device.objects", nlohmann::json::object(),
+                               [this, generation, serial_number](Gateway::GatewayError error, const nlohmann::json& result) {
+                                   if (generation != m_gateway_device.generation || serial_number != m_gateway_device.serial_number)
+                                       return;
+
+                                   m_gateway_device.objects_query_active    = false;
+                                   const bool refresh_again                 = m_gateway_device.objects_refresh_pending;
+                                   m_gateway_device.objects_refresh_pending = false;
+
+                                   if (error) {
+                                       BOOST_LOG_TRIVIAL(warning)
+                                           << "[gateway][device-status] failed to query device objects: " << error.message;
+                                       if (refresh_again)
+                                           query_gateway_device_objects();
+                                       return;
+                                   }
+
+                                   std::vector<ConnectMachineInfo> slots;
+                                   if (!Gateway::GatewayDevice::parse_machine_slots(result, slots)) {
+                                       BOOST_LOG_TRIVIAL(warning) << "[gateway][device-status] device objects cannot build machine slots";
+                                       if (refresh_again)
+                                           query_gateway_device_objects();
+                                       return;
+                                   }
+
+                                   PresetBundle* bundle = preset_bundle;
+                                   if (bundle == nullptr) {
+                                       BOOST_LOG_TRIVIAL(error)
+                                           << "[gateway][device-status] cannot apply machine slots before preset bundle is ready";
+                                       return;
+                                   }
+                                   if (!Gateway::GatewayDevice::machine_slots_equal(bundle->m_connect_machine_info_list, slots)) {
+                                       apply_gateway_machine_slots(std::move(slots));
+                                       refresh_gateway_machine_slots_ui();
+                                   }
+                                   if (refresh_again)
+                                       query_gateway_device_objects();
+                               });
+}
+
+void GUI_App::clear_gateway_device()
+{
+    const bool          had_slots  = preset_bundle != nullptr && !preset_bundle->m_connect_machine_info_list.empty();
+    const std::uint64_t generation = m_gateway_device.generation + 1;
+    m_gateway_device               = GatewayDeviceState{};
+    m_gateway_device.generation    = generation;
+    if (preset_bundle != nullptr)
+        clear_gateway_machine_slots();
+    if (had_slots)
+        refresh_gateway_machine_slots_ui();
+}
+
+void GUI_App::apply_gateway_machine_slots(std::vector<ConnectMachineInfo> slots)
+{
+    if (preset_bundle == nullptr)
+        return;
+    preset_bundle->m_connect_machine_info_list = std::move(slots);
+}
+
+void GUI_App::clear_gateway_machine_slots()
+{
+    if (preset_bundle == nullptr)
+        return;
+    preset_bundle->m_connect_machine_info_list.clear();
+}
+
+void GUI_App::refresh_gateway_machine_slots_ui()
+{
+    if (m_is_closing)
+        return;
+    load_current_presets();
+    if (mainframe != nullptr && mainframe->plater() != nullptr)
+        mainframe->plater()->sidebar().update_all_preset_comboboxes(false);
+}
+
+void GUI_App::register_gateway_notifications()
+{
+    if (!m_gateway_service)
+        return;
+
+    m_gateway_service->set_notification_handler("notify.account.changed", [this](const nlohmann::json& params) {
+        Gateway::AccountSnapshot snapshot;
+        if (!Gateway::GatewayAccount::parse(params, snapshot)) {
+            BOOST_LOG_TRIVIAL(warning) << "[gateway][account] ignored invalid notify.account.changed frame";
+            return;
+        }
+        apply_gateway_account(snapshot);
+        if (snapshot.is_login && snapshot.token.empty())
+            refresh_gateway_account();
+    });
+
+    m_gateway_service->set_notification_handler("notify.device.connected",
+                                                [this](const nlohmann::json&) { query_gateway_current_device(); });
+    m_gateway_service->set_notification_handler("notify.device.current_changed",
+                                                [this](const nlohmann::json&) { query_gateway_current_device(); });
+    m_gateway_service->set_notification_handler("notify.device.object.changed", [this](const nlohmann::json& params) {
+        if (!m_gateway_device.connected || !Gateway::GatewayDevice::delta_affects_machine_slots(params))
+            return;
+        query_gateway_device_objects();
+    });
+    m_gateway_service->set_notification_handler("notify.device.disconnected", [this](const nlohmann::json& params) {
+        const std::string serial_number = Gateway::parse_device_sn(params);
+        if (serial_number.empty() || m_gateway_device.serial_number == serial_number)
+            clear_gateway_device();
+    });
+
+    m_gateway_service->set_state_callback([this](Gateway::ConnectionState state, const Gateway::GatewayError& error) {
+        if (state == Gateway::ConnectionState::Disconnected) {
+            BOOST_LOG_TRIVIAL(warning) << "connection gateway disconnected: " << error.message;
+            m_gateway_loaded_base_url.clear();
+            clear_gateway_device();
+            return;
+        }
+        if (state != Gateway::ConnectionState::Connected)
+            return;
+
+        if (!m_gateway_service)
+            return;
+
+        refresh_gateway_account();
+
+        const std::string base_url         = m_gateway_service->base_url();
+        BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [gateway] [connected] base_url=" << base_url;
+        const bool        endpoint_changed = m_gateway_loaded_base_url != base_url;
+        m_gateway_loaded_base_url          = base_url;
+        query_gateway_current_device();
+
+        if (endpoint_changed && mainframe != nullptr) {
+            mainframe->reload_gateway_pages();
+            if (WebPreprintDialog* preprint_dialog = dynamic_cast<WebPreprintDialog*>(get_web_preprint_dialog()))
+                preprint_dialog->refresh_gateway_urls();
+        }
+    });
+}
+
+wxString GUI_App::gateway_web_url(const wxString& page_key) const
+{
+    const std::string url = m_gateway_service ? m_gateway_service->web_url(into_u8(page_key)) : std::string{};
+    if (!url.empty())
+        return from_u8(url);
+
+    BOOST_LOG_TRIVIAL(warning)
+        << "[FLUTTER_FLOW] [gateway] [url_fallback] page=" << into_u8(page_key) << " port=" << get_page_http_port();
+    return wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) + "/web/orca/missing_connection.html");
+}
+
+std::string GUI_App::gateway_localfile_url(const std::string& file_path) const
+{
+    return m_gateway_service ? m_gateway_service->localfile_url(file_path) : std::string{};
+}
+
+Gateway::PreprintStoreResult GUI_App::gateway_store_preprint_context(const std::string& id, const nlohmann::json& payload) const
+{
+    if (!m_gateway_service)
+        return {{Gateway::GatewayErrorCode::NotConnected, "connection gateway is not available"}};
+    return m_gateway_service->store_preprint_context(id, payload);
+}
+
+bool GUI_App::is_gateway_url(const wxString& url) const
+{
+    const std::string base_url = m_gateway_service ? m_gateway_service->base_url() : std::string{};
+    if (base_url.empty())
+        return false;
+    const std::string candidate = into_u8(url);
+    if (candidate.rfind(base_url, 0) != 0)
+        return false;
+    if (candidate.size() == base_url.size())
+        return true;
+    switch (candidate[base_url.size()]) {
+    case '/': case '?': case '#': return true;
+    default: return false;
+    }
 }
 void GUI_App::stop_page_http_server()
 {
@@ -5746,7 +6350,7 @@ bool GUI_App::load_language(wxString language, bool initial)
 
     if (! wxLocale::IsAvailable(language_info->Language)) {
     	// Loading the language dictionary failed.
-    	wxString message = "Switching Snapmaker Orca to language " + language_info->CanonicalName + " failed.";
+        wxString message = "Switching Snapmaker Orca to language " + language_info->CanonicalName + " failed.";
 #if !defined(_WIN32) && !defined(__APPLE__)
         // likely some linux system
         message += "\nYou may need to reconfigure the missing locales, likely by running the \"locale-gen\" and \"dpkg-reconfigure locales\" commands.\n";
@@ -5926,10 +6530,16 @@ void GUI_App::open_preferences(size_t open_on_tab, const std::string& highlight_
             canvas->force_set_focus();
         // BBS
         //app_layout_changed = dlg.settings_layout_changed();
+        // GPU accel toggle: applied once after the dialog closes instead of
+        // rebuilding the toolpaths inside every checkbox click. The full
+        // reload subsumes the seq-view refresh below, so run that only when
+        // the GPU toggle did not change (avoids a double rebuild).
+        if (dlg.gcode_gpu_accel_changed())
+            this->plater_->reload_gcode_preview();
 #if ENABLE_GCODE_LINES_ID_IN_H_SLIDER
-        if (dlg.seq_top_layer_only_changed() || dlg.seq_seq_top_gcode_indices_changed())
+        else if (dlg.seq_top_layer_only_changed() || dlg.seq_seq_top_gcode_indices_changed())
 #else
-        if (dlg.seq_top_layer_only_changed())
+        else if (dlg.seq_top_layer_only_changed())
 #endif // ENABLE_GCODE_LINES_ID_IN_H_SLIDER
             this->plater_->refresh_print();
 #ifdef _WIN32
@@ -6128,12 +6738,7 @@ bool GUI_App::check_and_keep_current_preset_changes(const wxString& caption, con
                             static_cast<TabPrinter*>(tab)->cache_extruder_cnt();
                         }
                     }
-                    std::vector<std::string> selected_options2;
-                    std::transform(selected_options.begin(), selected_options.end(), std::back_inserter(selected_options2), [](auto & o) {
-                        auto i = o.find('#');
-                        return i != std::string::npos ? o.substr(0, i) : o;
-                    });
-                    tab->cache_config_diff(selected_options2);
+                    tab->cache_config_diff(selected_options);
                     if (!is_called_from_configwizard)
                         tab->m_presets->discard_current_changes();
                 }
@@ -6219,6 +6824,40 @@ void GUI_App::load_current_presets(bool active_preset_combox/*= false*/, bool ch
             tab->rebuild_page_tree();
         }
 
+    if (printer_technology == ptFFF && preset_bundle != nullptr) {
+        static const t_config_option_keys mixed_project_option_keys = {
+            "mixed_filament_gradient_mode",
+            "mixed_filament_height_lower_bound",
+            "mixed_filament_height_upper_bound",
+            "mixed_filament_advanced_dithering",
+            "mixed_filament_component_bias_enabled",
+            "mixed_filament_surface_indentation",
+            "mixed_filament_region_collapse",
+            "mixed_color_layer_height_a",
+            "mixed_color_layer_height_b",
+            "dithering_z_step_size",
+            "dithering_local_z_mode",
+            "dithering_local_z_whole_objects",
+            "dithering_local_z_infill",
+            "dithering_local_z_direct_multicolor",
+            "dithering_step_painted_zones_only",
+            "mixed_filament_pointillism_pixel_size",
+            "mixed_filament_pointillism_line_gap",
+            "mixed_filament_definitions"
+        };
+
+        // Keep the Mixed Filaments sidebar state in sync when presets are reloaded
+        // programmatically (for example after New Project). These options are also
+        // mirrored on manual edits in Tab::on_value_change(), but that path does
+        // not run when the current preset is simply reloaded.
+        preset_bundle->project_config.apply_only(
+            preset_bundle->prints.get_edited_preset().config,
+            mixed_project_option_keys,
+            true);
+
+        if (plater_ != nullptr)
+            sidebar().update_mixed_filament_panel(false);
+    }
     // Sidebar nozzle diameter combos depend on visible printer variants; rebuild after import / preset reload.
     // FOS: pass switch_machine=true so mixed mode auto-detects on startup
     if (plater() != nullptr)
@@ -6306,6 +6945,10 @@ void GUI_App::MacOpenURL(const wxString& url)
 {
     if (url.empty())
         return;
+    // post_init() decides whether to start a blank project based on init_params->input_files,
+    // which is always empty here: macOS launches the app first and delivers the URL afterwards.
+    // Without this flag post_init resets the project that this download is about to load.
+    m_url_open_pending = true;
     start_download(into_u8(url));
 }
 
@@ -6664,6 +7307,7 @@ bool GUI_App::run_wizard(ConfigWizard::RunReason reason, ConfigWizard::StartPage
 {
     wxCHECK_MSG(mainframe != nullptr, false, "Internal error: Main frame not created / null");
 
+    const std::string locale_before_wizard = gateway_locale();
     std::string strFinish = wxGetApp().app_config->get("firstguide", "finish");
     long        pStyle    = wxCAPTION | wxCLOSE_BOX | wxSYSTEM_MENU;
     if (strFinish == "false" || strFinish.empty())
@@ -6675,21 +7319,51 @@ bool GUI_App::run_wizard(ConfigWizard::RunReason reason, ConfigWizard::StartPage
                 start_page == ConfigWizard::SP_PRINTERS ? GuideFrame::BBL_MODELS_ONLY :
                 GuideFrame::BBL_MODELS;
     wizard.SetStartPage(page);
-    bool       res = wizard.run();
+    bool       res = false;
+    try {
+        res = wizard.run();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "run_wizard exception: " << e.what();
+        flush_logs();
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "run_wizard unknown exception";
+        flush_logs();
+    }
 
     if (res) {
         load_current_presets();
         wxGetApp().sidebar().update_nozzle_settings();
         update_publish_status();
         mainframe->refresh_plugin_tips();
-        m_fltviews.reload_all();
+        sync_gateway_region_after_wizard(locale_before_wizard);
         // BBS: remove SLA related message
     }
     auto isAgree = wxGetApp().app_config->get("app", PRIVACY_POLICY_FLAGS);
 
-    user_update_privacy_notify(isAgree == "true");    
+    user_update_privacy_notify(isAgree == "true");
     BOOST_LOG_TRIVIAL(warning) << "run_wizard changed the privacy policy with: " << (isAgree);
     return res;
+}
+
+void GUI_App::sync_gateway_region_after_wizard(const std::string& locale_before_wizard)
+{
+    const std::string locale_after_wizard = gateway_locale();
+    bool              gateway_refreshed   = false;
+    if (locale_after_wizard != locale_before_wizard && m_gateway_service) {
+        const std::size_t separator = locale_after_wizard.find_last_of("-_");
+        if (separator != std::string::npos && separator + 1 < locale_after_wizard.size()) {
+            const std::string region = locale_after_wizard.substr(separator + 1);
+            const auto        result = m_gateway_service->set_region(region);
+            if (result.error) {
+                BOOST_LOG_TRIVIAL(warning) << "failed to update connection gateway region: " << result.error.message;
+            } else {
+                BOOST_LOG_TRIVIAL(info) << "connection gateway region updated to " << region << " with locale " << locale_after_wizard;
+                gateway_refreshed = true;
+            }
+        }
+    }
+    if (!gateway_refreshed)
+        m_fltviews.reload_all();
 }
 
 void GUI_App::show_desktop_integration_dialog()
@@ -6846,17 +7520,6 @@ void GUI_App::recent_file_notify(const json& res)
     }
 }
 
-void GUI_App::device_card_notify(const json& res)
-{
-    for (const auto& instance : m_device_card_subscribers) {
-        auto ptr = instance.second.lock();
-        if (ptr) {
-            ptr->m_res_data = res;
-            ptr->send_to_js();
-        }
-    }
-}
-
 void GUI_App::page_state_notify_webview(wxWebView* webview, const std::string& state)
 {
     if (!webview) return;
@@ -6875,19 +7538,16 @@ void GUI_App::page_state_notify_webview(wxWebView* webview, const std::string& s
     }
 }
 
-void GUI_App::cache_notify(const std::string& key, const json& res)
+void GUI_App::notify_foreground_change(const bool active)
 {
-    for (const auto& instance : m_cache_subscribers) {
-        auto ptr = instance.first.second.lock();
-        if (ptr) {
-            std::string cache_key = instance.second;
-            if (cache_key == key) {
-                json object = json::object();
-                object[key] = res;
+    json data;
+    data["state"] = active;
 
-                ptr->m_res_data = object;
-                ptr->send_to_js();
-            }
+    for (const auto& instance : m_foreground_change_subscribers) {
+        auto ptr = instance.second.lock();
+        if (ptr) {
+            ptr->m_res_data = data;
+            ptr->send_to_js();
         }
     }
 }
@@ -6895,11 +7555,12 @@ void GUI_App::cache_notify(const std::string& key, const json& res)
 void GUI_App::user_update_privacy_notify(const bool& res)
 {
     set_privacy_policy(res);
+    ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_consent(res);
 
     json data;
 
     data[PRIVACY_POLICY_FLAGS] = res;
-    
+
     for (const auto& instance : m_user_update_privacy_subscribers) {
         auto ptr = instance.second.lock();
         if (ptr) {
@@ -6910,21 +7571,10 @@ void GUI_App::user_update_privacy_notify(const bool& res)
 
 }
 
-void GUI_App::user_login_notify(const json& res)
-{
-    for (const auto& instance : m_user_login_subscribers) {
-        auto ptr = instance.second.lock();
-        if (ptr) {
-            ptr->m_res_data = res;
-            ptr->send_to_js();
-        }
-    }
-}
-
 bool GUI_App::config_wizard_startup()
 {
     auto isAgree = wxGetApp().app_config->get("app", PRIVACY_POLICY_FLAGS);
-    user_update_privacy_notify(isAgree == "true");   
+    user_update_privacy_notify(isAgree == "true");
     BOOST_LOG_TRIVIAL(warning) << "config_wizard_startup changed the privacy policy with: " << (isAgree);
     // FOS: skip wizard - users add printers after logging in
     return false;
@@ -7176,40 +7826,11 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
 
     if (true) {
         wxGetApp().CallAfter([this, need_reload_printerview](){
-            wxGetApp().app_config->set("use_new_connect", "false");
-            /*auto p_config = &(wxGetApp().preset_bundle->printers.get_edited_preset().config);
-            p_config->set("print_host", "");*/
-
-            auto devices = wxGetApp().app_config->get_devices();
-            for (size_t i = 0; i < devices.size(); ++i) {
-                if (devices[i].connected) {
-                    devices[i].connected = false;
-                    wxGetApp().app_config->save_device_info(devices[i]);
-                    break;
-                }
-            }
-
-            //// 同步卡片
-            //json param;
-            //param["command"]       = "local_devices_arrived";
-            //param["sequece_id"]    = "10001";
-            //param["data"]          = devices;
-            //std::string logout_cmd = param.dump();
-            //wxString    strJS      = wxString::Format("window.postMessage(%s)", logout_cmd);
-            //GUI::wxGetApp().run_script(strJS);
-
-            // wcp订阅
-            json data = this->app_config->get_devices();
-            wxGetApp().device_card_notify(data);
-
-            wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes(need_reload_printerview);
             wxGetApp().set_connect_host(nullptr);
-
-            wxGetApp().preset_bundle->machine_filaments.clear();
-            // wxGetApp().load_current_presets();
+            wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes(need_reload_printerview);
 
         });
-        
+
     }
 
     return true;
@@ -7234,21 +7855,136 @@ void GUI_App::start_download(std::string url)
 
 }
 
-void GUI_App::SMUserInfo::notify() {
-    json data;
-    if (m_login) {
-        data["status"]   = "online";
-        data["nickname"] = m_login_user_name;
-        data["icon"]     = m_login_user_icon_url;
-        data["token"]    = m_login_user_token;
-        data["userid"]   = m_login_user_id;
-        data["account"]  = m_login_user_account;
-    } else {
-        data["status"] = "offline";
+//---------------------------------------------------------------------------
+// Extensible incompatible support-material pair detection.
+// Each entry: {interface_material, incompatible_model_material}.
+// When the interface filament equals the first type AND the plate
+// contains models of the second type, a parameter recommendation is
+// triggered. Add new pairs here — no other code changes needed.
+//---------------------------------------------------------------------------
+namespace {
+struct IncompatibleSupportPair {
+    const char *interface_type;
+    const char *model_type;
+};
+
+const IncompatibleSupportPair INCOMPATIBLE_SUPPORT_PAIRS[] = {
+    {"PETG", "PLA"},
+    {"PLA",  "PETG"},
+    // Future: {"PLA", "TPU"},
+    // Future: {"PLA", "TPU-AMS"},
+};
+} // anonymous namespace
+
+//---------------------------------------------------------------------------
+// Scans all model objects on all plates for any of the given filament_type
+// strings. Mixed-filament virtual slots are expanded to physical components
+// before checking.
+//---------------------------------------------------------------------------
+bool has_filaments(const std::vector<std::string> &filament_types)
+{
+    if (filament_types.empty())
+        return false;
+
+    Plater *plater = wxGetApp().plater();
+    if (plater == nullptr)
+        return false;
+
+    PresetBundle *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return false;
+
+    const std::vector<std::string> &filament_presets = preset_bundle->filament_presets;
+    const PresetCollection         &filaments        = preset_bundle->filaments;
+    const size_t num_physical    = filament_presets.size();
+
+    // Resolve filament_type string for a 1-based extruder index.
+    auto resolve_filament_type = [&](int extruder_id_1based) -> std::string {
+        if (extruder_id_1based <= 0)
+            return std::string();
+        unsigned int idx = static_cast<unsigned int>(extruder_id_1based - 1);
+        if (idx >= filament_presets.size())
+            return std::string();
+        const Preset *preset = filaments.find_preset(filament_presets[idx]);
+        if (preset == nullptr)
+            return std::string();
+        const ConfigOptionStrings *opt = preset->config.option<ConfigOptionStrings>(
+            "filament_type");
+        if (opt == nullptr || opt->values.empty())
+            return std::string();
+        return opt->values[0];
+    };
+
+    // Collect 1-based extruder IDs from all model volumes on all plates.
+    std::vector<int> raw_extruder_ids;
+    const ModelObjectPtrs &model_objects = plater->model().objects;
+    for (const ModelObject *obj : model_objects) {
+        if (obj == nullptr) continue;
+        for (const ModelVolume *vol : obj->volumes) {
+            if (vol == nullptr) continue;
+            std::vector<int> extruders = vol->get_extruders();
+            raw_extruder_ids.insert(raw_extruder_ids.end(),
+                                    extruders.begin(), extruders.end());
+        }
     }
 
-    wxGetApp().user_login_notify(data);
+    // Expand mixed-filament virtual IDs to physical components.
+    // This expansion is for MODEL material detection only — mixed slots
+    // CANNOT be selected as support_interface_filament (ConfigManipulation
+    // clamping resets them to 0 when value exceeds filament_cnt).
+    MixedFilamentManager &mixed_mgr = preset_bundle->mixed_filaments;
+    if (num_physical > 0) {
+        mixed_mgr.expand_virtual_extruder_ids(raw_extruder_ids, num_physical);
+    }
 
+    // Match each expanded physical extruder against the target list.
+    for (int extruder_id : raw_extruder_ids) {
+        std::string filament_type = resolve_filament_type(extruder_id);
+        if (filament_type.empty()) continue;
+        for (const std::string &target : filament_types) {
+            if (filament_type == target)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+// Checks whether the filament at extruder_id forms an incompatible
+// PLA↔PETG support pair with any model material on the plate.
+// Returns true if a recommendation dialog should be shown.
+bool check_pla_petg_support_pair(int extruder_id)
+{
+    PresetBundle *preset_bundle = Slic3r::GUI::wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return false;
+
+    const std::vector<std::string> &filament_presets = preset_bundle->filament_presets;
+
+    if (extruder_id < 0 || extruder_id >= static_cast<int>(filament_presets.size()))
+        return false;
+
+    const Preset *filament = preset_bundle->filaments.find_preset(
+        filament_presets[extruder_id]);
+    if (filament == nullptr)
+        return false;
+
+    const ConfigOptionStrings *ft_opt =
+        filament->config.option<ConfigOptionStrings>("filament_type");
+    if (ft_opt == nullptr || ft_opt->values.empty())
+        return false;
+
+    const std::string &interface_type = ft_opt->values[0];
+
+    for (const IncompatibleSupportPair &pair : INCOMPATIBLE_SUPPORT_PAIRS) {
+        if (interface_type == pair.interface_type) {
+            bool found = has_filaments({pair.model_type});
+            if (found)
+                return true;
+        }
+    }
+
+    return false;
 }
 bool is_support_filament(int extruder_id)
 {
@@ -7264,7 +8000,7 @@ bool is_support_filament(int extruder_id)
     if (support_option == nullptr) return false;
 
     return support_option->get_at(0);
-};
+}
 
 // FOS: see GUI_App.hpp. Uniformity test matches PresetBundle::full_config() and
 // DynamicPrintConfig::normalize_fdm_1() so the GUI and the slicer never disagree.

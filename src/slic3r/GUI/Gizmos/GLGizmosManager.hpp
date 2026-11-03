@@ -26,6 +26,7 @@ namespace GUI {
 
 class GLCanvas3D;
 class ClippingPlane;
+class GLSubTextureBindRenderer;
 enum class SLAGizmoEventType : unsigned char;
 class CommonGizmosDataPool;
 //BBS: GUI refactor: add object manipulation
@@ -169,6 +170,10 @@ public:
         IC_TOOLBAR_RESET_ZERO_HOVER,
         IC_TOOLBAR_TOOLTIP,
         IC_TOOLBAR_TOOLTIP_HOVER,
+        IC_FIT_CAMERA,
+        IC_FIT_CAMERA_HOVER,
+        IC_FIT_CAMERA_DARK,
+        IC_FIT_CAMERA_DARK_HOVER,
         IC_NAME_COUNT,
     };
 
@@ -278,7 +283,7 @@ public:
     void render_painter_gizmo();
     void render_painter_assemble_view() const;
 
-    void render_overlay();
+    void render_overlay(GLSubTextureBindRenderer* renderer = nullptr);
 
     void render_arrow(const GLCanvas3D& parent, EType highlighted_type) const;
 
@@ -312,7 +317,7 @@ private:
     
     void render_background(float left, float top, float right, float bottom, float border_w, float border_h) const;
     
-    void do_render_overlay() const;
+    void do_render_overlay(GLSubTextureBindRenderer* renderer) const;
 
     bool generate_icons_texture();
 

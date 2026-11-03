@@ -19,6 +19,19 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 
+#ifdef __linux__
+static std::string get_linux_config_dir()
+{
+    const char* xdg_config = getenv("XDG_CONFIG_HOME");
+    if (xdg_config && xdg_config[0] != '\0')
+        return std::string(xdg_config) + "/Snapmaker_Orca";
+    const char* home = getenv("HOME");
+    if (home && home[0] != '\0')
+        return std::string(home) + "/.config/Snapmaker_Orca";
+    return std::string();
+}
+#endif
+
 namespace common
 {
     std::string get_pc_name()
@@ -95,8 +108,9 @@ namespace common
         versionFilePath      = home_env;
         versionFilePath      = versionFilePath + "/Library/Application Support/" SLIC3R_APP_KEY "/system/Snapmaker.json";
 #else
-
-    
+        std::string config_dir = get_linux_config_dir();
+        if (!config_dir.empty())
+            versionFilePath = config_dir + "/system/Snapmaker.json";
 #endif
         std::ifstream json_file(versionFilePath);
         if (!json_file.is_open()) {
@@ -109,50 +123,6 @@ namespace common
 
         return str_version;
     }
-
-    std::string get_flutter_version()
-    {
-
-            std::string versionFilePath = "";
-
-#ifdef _WIN32
-            PWSTR   pszPath = nullptr;
-            char*   path    = new char[MAX_PATH]();
-            size_t  pathLength = 0;
-            HRESULT hr         = SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &pszPath);
-            if (SUCCEEDED(hr)) {
-                wcstombs_s(&pathLength, path, MAX_PATH, pszPath, MAX_PATH);
-                CoTaskMemFree(pszPath);
-            }                      
-            
-            std::string filePath = path;
-            versionFilePath      = filePath + "\\" + std::string(SLIC3R_APP_KEY "\\web\\flutter_web\\version.json");
-
-            delete[] path;
-#elif __APPLE__
-            const char* home_env = getenv("HOME");
-            versionFilePath      = home_env;
-            versionFilePath      = versionFilePath + "/Library/Application Support/" SLIC3R_APP_KEY "/web/flutter_web/version.json";
-#else
-
-#endif
-
-            std::ifstream json_file(versionFilePath);
-            if (!json_file.is_open()) {
-                std::ifstream json_file(versionFilePath);                
-                return "";
-            }
-            nlohmann::json json_data;
-            json_file >> json_data;
-            std::string str_version = json_data.value("version", "");
-            std::string str_build_number = json_data.value("build_number", "");
-
-            std::string flutter_version = std::string("flutter_version: ") + str_version + std::string("  ") + std::string("build_number: ") +
-                              str_build_number;
-           
-            return flutter_version;
-    }
-
 
     std::string getLocalArea() 
     { 
@@ -180,7 +150,9 @@ namespace common
         versionFilePath      = home_env;
         cfgfile              = versionFilePath + "/Library/Application Support/" SLIC3R_APP_KEY "/" SLIC3R_APP_KEY ".conf";
 #else
-
+        std::string config_dir = get_linux_config_dir();
+        if (!config_dir.empty())
+            cfgfile = config_dir + "/Snapmaker_Orca.conf";
 #endif
         std::ifstream json_file(cfgfile);
         if (!json_file.is_open()) {
@@ -222,7 +194,9 @@ namespace common
         versionFilePath      = home_env;
         cfgfile              = versionFilePath + "/Library/Application Support/" SLIC3R_APP_KEY "/" SLIC3R_APP_KEY ".conf";
 #else
-
+        std::string config_dir = get_linux_config_dir();
+        if (!config_dir.empty())
+            cfgfile = config_dir + "/Snapmaker_Orca.conf";
 #endif
         std::ifstream json_file(cfgfile);
         if (!json_file.is_open()) {

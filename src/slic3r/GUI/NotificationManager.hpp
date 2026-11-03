@@ -150,6 +150,7 @@ enum class NotificationType
 	BBLPreviewOnlyMode,
     BBLPrinterConfigUpdateAvailable,
 	BBLUserPresetExceedLimit,
+        FilamentIncompatibleMixed,
 };
 
 class NotificationManager
@@ -199,7 +200,9 @@ public:
 	void stop_delayed_notifications_of_type(const NotificationType type);
 	// Creates Validate Error notification with a custom text and no fade out.
 	void push_validate_error_notification(StringObjectException const & error);
-		// print host upload
+    void close_validate_error_notification(const std::string& text);
+    void close_validate_warning_notification(const std::string& text);
+    // print host upload
 	void push_upload_job_notification(int id, float filesize, const std::string& filename, const std::string& host, float percentage = 0);
 	void set_upload_job_notification_percentage(int id, const std::string& filename, const std::string& host, float percentage);
 	void upload_job_notification_show_canceled(int id, const std::string& filename, const std::string& host);
@@ -228,6 +231,11 @@ public:
 	// Closes error or warning of the same text
 	void close_plater_error_notification(const std::string& text);
 	void close_plater_warning_notification(const std::string& text);
+	// PLA/PETG mix warning: uses SlicingWarning type to stay visible
+	// in Preview mode without blocking slicing.
+	void push_pla_petg_mix_warning(const std::string& text);
+	void close_pla_petg_mix_warning(const std::string& text);
+	void reset_pla_petg_mix_warning();
 	// Object warning with ObjectID, closes when object is deleted. ID used is of object not print like in slicing warning.
 	void push_simplify_suggestion_notification(const std::string& text, ObjectID object_id, const std::string& hypertext = "",
 		std::function<bool(wxEvtHandler*)> callback = std::function<bool(wxEvtHandler*)>());
@@ -325,7 +333,8 @@ public:
 	void bbl_show_objectsinfo_notification(const std::string &text, bool is_warning, bool is_hidden);
     void bbl_close_objectsinfo_notification();
 
-    void bbl_show_seqprintinfo_notification(const std::string &text);
+	//BBS--Seq Print Info
+	void bbl_show_seqprintinfo_notification(const std::string &text);
     void bbl_close_seqprintinfo_notification();
 
 	//BBS--EmptyLayer
@@ -363,6 +372,9 @@ private:
 		int                      sub_msg_id {-1};
 		std::string        ori_text;
         bool                use_warn_color { false };
+        // Identifies the origin of a ValidateError (option key, or exception type);
+        // notifications of the same source reuse and update each other instead of stacking.
+        std::string        source_key;
 	};
 
 	// Cache of IDs to identify and reuse ImGUI windows.
@@ -591,6 +603,20 @@ private:
 		void	     close()  override { if(is_finished()) return; m_state = EState::Hidden; wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0); }
 		void		 real_close()      { m_state = EState::ClosePending; wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0); }
 		void         show()            { m_state = EState::Unknown; }
+	};
+
+	// Snapmaker: PLA/PETG mutual-support mix warning.
+	// Mirrors PlaterWarningNotification's Hidden semantics: closing with X hides it (remembered)
+	// instead of erasing it, so the per-frame detection can no longer immediately recreate it.
+	// It is truly removed (real_close) only when the underlying data changes (PLA/PETG combo
+	// removed), so the warning re-appears only on a real data change. Uses SlicingWarning type
+	// (not PlaterWarning) so it is unaffected by set_in_preview() tab switching.
+	class PlaPetgMixNotification : public PopNotification
+	{
+	public:
+		PlaPetgMixNotification(const NotificationData& n, NotificationIDProvider& id_provider, wxEvtHandler* evt_handler) : PopNotification(n, id_provider, evt_handler) {}
+		void	     close()  override { if(is_finished()) return; m_state = EState::Hidden; wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0); }
+		void		 real_close()      { m_state = EState::ClosePending; wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0); }
 	};
 
 
@@ -844,6 +870,7 @@ private:
 	//can be used to create custom notification
 	bool push_notification_data(const NotificationData& notification_data, int timestamp);
 	bool push_notification_data(std::unique_ptr<NotificationManager::PopNotification> notification, int timestamp);
+    void close_notification_of_type_and_text(const NotificationType type, const std::string& text);
 	// Delayed notifications goes first to the m_waiting_notifications vector and only after remaining time is <= 0
 	// and condition callback is success, notification is regular pushed from update function.
 	// Otherwise another delay interval waiting. Timestamp is 0.
@@ -898,6 +925,8 @@ private:
 		NotificationType::PlaterWarning,
 		NotificationType::ProgressBar,
 		NotificationType::PrintHostUpload,
+        NotificationType::ValidateError,
+        NotificationType::ValidateWarning,
         NotificationType::SimplifySuggestion
 	};
 	//prepared (basic) notifications

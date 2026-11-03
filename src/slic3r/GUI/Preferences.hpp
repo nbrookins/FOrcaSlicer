@@ -8,6 +8,7 @@
 #include <wx/dialog.h>
 #include <wx/timer.h>
 #include <vector>
+#include <functional>
 #include <list>
 #include <map>
 #include "Widgets/ComboBox.hpp"
@@ -66,10 +67,13 @@ protected:
 
     // bool								m_settings_layout_changed {false};
     bool m_seq_top_layer_only_changed{false};
+    bool m_gcode_gpu_accel_changed{false};
+    bool m_gcode_gpu_accel_initial{false};
     bool m_recreate_GUI{false};
 
 public:
     bool seq_top_layer_only_changed() const { return m_seq_top_layer_only_changed; }
+    bool gcode_gpu_accel_changed() const { return m_gcode_gpu_accel_changed; }
     bool recreate_GUI() const { return m_recreate_GUI; }
     void on_dpi_changed(const wxRect &suggested_rect) override;
 
@@ -91,6 +95,7 @@ public:
     // debug mode
     ::CheckBox * m_developer_mode_ckeckbox   = {nullptr};
     ::CheckBox * m_internal_developer_mode_ckeckbox = {nullptr};
+
     ::CheckBox * m_dark_mode_ckeckbox        = {nullptr};
     ::TextInput *m_backup_interval_textinput = {nullptr};
     ::CheckBox * m_legacy_networking_ckeckbox     = {nullptr};
@@ -110,7 +115,7 @@ public:
     wxBoxSizer *create_item_region_combobox(wxString title, wxWindow *parent, wxString tooltip, std::vector<wxString> vlist);
     wxBoxSizer *create_item_language_combobox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param, std::vector<const wxLanguageInfo *> vlist);
     wxBoxSizer *create_item_loglevel_combobox(wxString title, wxWindow *parent, wxString tooltip, std::vector<wxString> vlist);
-    wxBoxSizer *create_item_checkbox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param);
+    wxBoxSizer *create_item_checkbox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param, std::function<bool(bool new_val, bool old_val)> confirm_cb = nullptr);
     wxBoxSizer *create_item_darkmode_checkbox(wxString title, wxWindow *parent, wxString tooltip, int padding_left, std::string param);
     void set_dark_mode();
     wxBoxSizer *create_item_button(wxString title, wxString title2, wxWindow *parent, wxString tooltip, wxString tooltip2, std::function<void()> onclick, bool button_on_left = false);

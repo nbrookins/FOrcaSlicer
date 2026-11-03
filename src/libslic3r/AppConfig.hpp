@@ -30,36 +30,6 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-struct DeviceInfo {
-    std::string ip;
-    std::string dev_id;
-    std::string dev_name;
-    std::string model_name;
-    std::string preset_name;  // 关联的打印机预设名称
-    bool        connected;
-	std::string img;
-	std::vector<std::string> nozzle_sizes;
-    std::string              sn;
-    int              protocol;
-    std::string              api_key;
-    std::string              user;
-    std::string              password;
-    std::string              ca;
-    std::string              cert;
-    std::string              key;
-    std::string              clientId;
-    int              port;
-    std::string              link_mode;
-    std::string              userid;
-    std::string              id;
-
-
-    
-    // 用于JSON序列化
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE(DeviceInfo, ip, dev_id, dev_name, model_name, preset_name, connected, img, nozzle_sizes, sn, protocol,api_key,
-		user, password, ca, cert, key, clientId, port, link_mode, userid, id)
-};
-
 // Connected LAN mode BambuLab printer
 struct BBLocalMachine
 {
@@ -234,19 +204,24 @@ public:
         m_printer_settings.erase(printer);
         m_dirty = true;
     }
-    bool has_printer_setting(std::string printer, std::string name) {
-        if (!has_printer_settings(printer))
+    bool has_printer_setting(const std::string& printer, const std::string& name) const {
+        MachineSettingMap::const_iterator printerIt = m_printer_settings.find(printer);
+        if (printerIt == m_printer_settings.end())
             return false;
-        if (!m_printer_settings[printer].contains(name))
-            return false;
-        return true;
+        return printerIt->second.contains(name);
     }
-    std::string get_printer_setting(std::string printer, std::string name) {
-        if (!has_printer_setting(printer, name))
+    std::string get_printer_setting(const std::string& printer, const std::string& name) const {
+        MachineSettingMap::const_iterator printerIt = m_printer_settings.find(printer);
+        if (printerIt == m_printer_settings.end())
             return "";
-        return m_printer_settings[printer][name];
+
+        nlohmann::json::const_iterator settingIt = printerIt->second.find(name);
+        if (settingIt == printerIt->second.end() || !settingIt.value().is_string())
+            return "";
+
+        return settingIt.value().get<std::string>();
     }
-    void set_printer_setting(std::string printer, std::string name, std::string value) {
+    void set_printer_setting(const std::string& printer, const std::string& name, const std::string& value) {
         m_printer_settings[printer][name] = value;
         m_dirty = true;
     }
@@ -327,6 +302,8 @@ public:
 	std::string 		get_version_upgrade_url(bool stable_only = false);
 	std::string 		get_preset_upgrade_url();
 	std::string 		get_web_resource_upgrade_url();
+	// snapmaker-config gray release API endpoint; can be overridden by "orca_config_api_url" (debug/testing)
+	std::string 		get_config_api_url();
 
 	// Returns the original Slic3r version found in the ini file before it was overwritten
 	// by the current version
@@ -374,13 +351,6 @@ public:
     static const std::string SECTION_MATERIALS;
     static const std::string SECTION_EMBOSS_STYLE;
 
-    // 添加设备相关的方法
-    void save_device_info(const DeviceInfo& device);
-    void remove_device_info(const std::string& dev_id);
-    std::vector<DeviceInfo> get_devices() const;
-    bool get_device_info(const std::string& dev_id, DeviceInfo& info) const;
-    void                    clear_device_info();
-
 	void clear_filament_extruder_map();
     std::unordered_map<int, int>& get_filament_extruder_map_ref();
 
@@ -427,9 +397,6 @@ private:
 
     // 添加耗材名称映射表
     static const std::map<std::string, std::string> filament_name_map;
-
-    // 添加设备信息存储
-    std::vector<DeviceInfo> m_device_list;
 
 	// 耗材喷嘴映射表
     std::unordered_map<int, int> filament_extruder_map;

@@ -78,22 +78,7 @@ public:
 
     virtual bool send_gcodes(const std::vector<std::string>& codes, std::string& extraInfo) { return false; }
 
-    virtual bool get_machine_info(const std::vector<std::pair<std::string, std::vector<std::string>>>& targets, nlohmann::json& response) { return false; }
-
-    virtual void async_get_system_info(std::function<void(const nlohmann::json& response)> callback){}
-
     virtual void async_server_files_get_status(std::function<void(const nlohmann::json& response)> callback) {}
-
-    virtual void async_get_machine_info(const std::vector<std::pair<std::string, std::vector<std::string>>>& targets, std::function<void(const nlohmann::json& response)>) {}
-
-    virtual void async_get_device_info(std::function<void(const nlohmann::json& response)>) {}
-
-    virtual void async_get_machine_objects(std::function<void(const nlohmann::json& response)>) {}
-
-    virtual void async_get_printer_info(std::function<void(const nlohmann::json& response)>) {}
-
-    virtual void async_set_machine_subscribe_filter(const std::vector<std::pair<std::string, std::vector<std::string>>>& targets,
-                                                    std::function<void(const nlohmann::json& response)>                  callback) {}
 
     virtual void async_unsubscribe_machine_info(const std::string& hash, std::function<void(const nlohmann::json&)>) {}
 
@@ -139,6 +124,10 @@ public:
 
     virtual void async_start_cloud_print(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
 
+    virtual void async_start_local_print(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
+
+    virtual void async_machine_heartbeat(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
+
     virtual void async_cancel_pull_cloud_file(std::function<void(const nlohmann::json& response)>) {}
 
     virtual void async_set_device_name(const std::string& device_name, std::function<void(const nlohmann::json& response)>) {}
@@ -150,6 +139,8 @@ public:
     virtual void async_bedmesh_abort_probe_mesh(std::function<void(const nlohmann::json& response)>) {}
 
     virtual void async_controlPurifier(int fan_speed, int delay_time, int work_time, std::function<void(const nlohmann::json& response)>) {}
+
+    virtual void async_controlPurifier(const nlohmann::json& params, std::function<void(const nlohmann::json& response)> callback) {}
 
     virtual void async_control_main_fan(int speed, std::function<void(const nlohmann::json& response)>) {}
 
@@ -166,6 +157,8 @@ public:
     virtual void async_get_file_page_list(const std::string& root, int files_per_page, int page_number, std::function<void(const nlohmann::json& response)>){}
 
     virtual void async_upload_camera_timelapse(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
+
+    virtual void async_upload_timelapse_instance(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
 
     virtual void async_delete_camera_timelapse(const nlohmann::json& targets, std::function<void(const nlohmann::json& response)>) {}
 

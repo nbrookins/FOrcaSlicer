@@ -1,5 +1,6 @@
 #include "Exception.hpp"
 #include "NozzleLayerPlanner.hpp"
+#include "AABBTreeLines.hpp"
 #include "Print.hpp"
 #include "BoundingBox.hpp"
 #include "ClipperUtils.hpp"
@@ -127,7 +128,12 @@ PrintBase::ApplyStatus PrintObject::set_instances(PrintInstances &&instances)
     	[](const PrintInstance& lhs, const PrintInstance& rhs) { return lhs.model_instance == rhs.model_instance && lhs.shift == rhs.shift; });
     if (! equal) {
         status = PrintBase::APPLY_STATUS_CHANGED;
-        if (m_print->invalidate_steps({ psSkirtBrim, psGCodeExport }) ||
+        // Tree support branches are routed against the machine border (bed bounds) anchored to the
+        // instance shift, so a pure XY translation makes the cached tree support layers stale and they
+        // have to be regenerated. Regular supports are computed in object coordinates and stay valid
+        // when the instance is translated, so the cheap skirt/gcode-only invalidation is kept for them.
+        if ((is_tree(m_config.support_type.value) && this->invalidate_step(posSupportMaterial)) ||
+            m_print->invalidate_steps({ psSkirtBrim, psGCodeExport }) ||
             (! equal_length && m_print->invalidate_step(psWipeTower)))
             status = PrintBase::APPLY_STATUS_INVALIDATED;
         m_instances = std::move(instances);
@@ -713,13 +719,19 @@ void PrintObject::generate_support_material()
 void PrintObject::estimate_curled_extrusions()
 {
     if (this->set_started(posEstimateCurledExtrusions)) {
-        if ( std::any_of(this->print()->m_print_regions.begin(), this->print()->m_print_regions.end(),
-                        [](const PrintRegion *region) { return region->config().enable_overhang_speed.getBool(); })) {
+        const DynamicPrintConfig &full_config = this->print()->full_print_config();
+        if (std::any_of(this->print()->m_print_regions.begin(), this->print()->m_print_regions.end(),
+                        [&full_config](const PrintRegion *region) {
+                            return get_value_at(full_config, region->config().enable_overhang_speed,
+                                                ConfigFlowDomain::Process, 0);
+                        })) {
+            const double inner_wall_acceleration = get_value_at(
+                full_config, this->print()->default_object_config().inner_wall_acceleration,
+                ConfigFlowDomain::Process, 0);
 
             // Estimate curling of support material and add it to the malformaition lines of each layer
-            float support_flow_width = support_material_flow(this, this->config().layer_height).width();
             SupportSpotsGenerator::Params params{this->print()->m_config.filament_type.values,
-                                                 float(this->print()->default_object_config().inner_wall_acceleration.getFloat()),
+                                                 float(inner_wall_acceleration),
                                                  this->config().raft_layers.getInt(), this->config().brim_type.value,
                                                  float(this->config().brim_width.getFloat())};
             SupportSpotsGenerator::estimate_malformations(this->layers(), params);
@@ -837,6 +849,7 @@ FillLightning::GeneratorPtr PrintObject::prepare_lightning_infill_data()
 
 void PrintObject::clear_layers()
 {
+    this->clear_local_z_plan();
     if (!m_shared_object) {
         for (Layer *l : m_layers)
             delete l;
@@ -978,11 +991,11 @@ bool PrintObject::invalidate_state_by_config_options(
             // Return true if gap-fill speed has changed from zero value to non-zero or from non-zero value to zero.
             auto is_gap_fill_changed_state_due_to_speed = [&opt_key, &old_config, &new_config]() -> bool {
                 if (opt_key == "gap_infill_speed") {
-                    const auto *old_gap_fill_speed = old_config.option<ConfigOptionFloat>(opt_key);
-                    const auto *new_gap_fill_speed = new_config.option<ConfigOptionFloat>(opt_key);
+                    const auto *old_gap_fill_speed = old_config.option<ConfigOptionFloats>(opt_key);
+                    const auto *new_gap_fill_speed = new_config.option<ConfigOptionFloats>(opt_key);
                     assert(old_gap_fill_speed && new_gap_fill_speed);
-                    return (old_gap_fill_speed->value > 0.f && new_gap_fill_speed->value == 0.f) ||
-                           (old_gap_fill_speed->value == 0.f && new_gap_fill_speed->value > 0.f);
+                    return (old_gap_fill_speed->values.size() != new_gap_fill_speed->values.size()) ||
+                           (old_gap_fill_speed->values != new_gap_fill_speed->values);
                 }
                 return false;
             };
@@ -995,6 +1008,13 @@ bool PrintObject::invalidate_state_by_config_options(
             steps.emplace_back(posPerimeters);
         } else if (
                opt_key == "layer_height"
+            || opt_key == "dithering_z_step_size"
+            || opt_key == "dithering_local_z_mode"
+            || opt_key == "dithering_local_z_whole_objects"
+            || opt_key == "dithering_local_z_direct_multicolor"
+            || opt_key == "dithering_step_painted_zones_only"
+            || opt_key == "mixed_filament_component_bias_enabled"
+            || opt_key == "mixed_filament_region_collapse"
             || opt_key == "mmu_segmented_region_max_width"
             || opt_key == "mmu_segmented_region_interlocking_depth"
             || opt_key == "raft_layers"
@@ -1011,6 +1031,19 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "interlocking_depth"
             || opt_key == "interlocking_boundary_avoidance"
             || opt_key == "interlocking_beam_width") {
+            steps.emplace_back(posSlice);
+        } else if (
+               opt_key == "mixed_filament_gradient_mode"
+            || opt_key == "mixed_filament_height_lower_bound"
+            || opt_key == "mixed_filament_height_upper_bound"
+            || opt_key == "mixed_filament_advanced_dithering"
+            || opt_key == "mixed_filament_component_bias_enabled"
+            || opt_key == "mixed_filament_surface_indentation"
+            || opt_key == "mixed_filament_region_collapse"
+            || opt_key == "mixed_filament_definitions") {
+            // Mixed filament gradient controls affect layer cadence and virtual
+            // tool distribution, so force a re-slice prompt like other
+            // layer-structure settings.
             steps.emplace_back(posSlice);
 		} else if (
                opt_key == "elefant_foot_compensation"
@@ -1055,6 +1088,7 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_filament"
             || opt_key == "support_interface_not_for_body"
             || opt_key == "support_interface_spacing"
+            || opt_key == "support_interface_min_area"
             || opt_key == "support_bottom_interface_spacing" //BBS
             || opt_key == "support_base_pattern"
             || opt_key == "support_style"
@@ -1088,11 +1122,17 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "tree_support_branch_angle"
             || opt_key == "tree_support_branch_angle_organic"
             || opt_key == "tree_support_angle_slow"
-            || opt_key == "tree_support_wall_count") {
+            || opt_key == "tree_support_wall_count"
+            || opt_key == "tree_support_transition_layers"
+            || opt_key == "support_transition_perimeter"
+            || opt_key == "support_transition_speed"
+            || opt_key == "support_transition_flow_ratio") {
             steps.emplace_back(posSupportMaterial);
         } else if (
                opt_key == "bottom_shell_layers"
-            || opt_key == "top_shell_layers") {
+            || opt_key == "top_shell_layers"
+            || opt_key == "bottom_color_penetration_layers"
+            || opt_key == "top_color_penetration_layers") {
 
             steps.emplace_back(posSlice);
 #if (0)
@@ -1199,6 +1239,11 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "precise_outer_wall") {
             steps.emplace_back(posPerimeters);
             steps.emplace_back(posSupportMaterial);
+            // Whole-object Local-Z masks and tool assignments are built during
+            // slicing from the wall filament, not during perimeter generation.
+            if (opt_key == "wall_filament" && m_print->config().dithering_local_z_mode.value &&
+                m_print->config().dithering_local_z_whole_objects.value)
+                steps.emplace_back(posSlice);
         } else if (opt_key == "bridge_flow" || opt_key == "internal_bridge_flow") {
             if (m_config.support_top_z_distance > 0.) {
             	// Only invalidate due to bridging if bridging is enabled.
@@ -1253,7 +1298,8 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (
                opt_key == "flush_into_infill"
             || opt_key == "flush_into_objects"
-            || opt_key == "flush_into_support") {
+            || opt_key == "flush_into_support"
+            || opt_key == "dithering_local_z_infill") {
             invalidated |= m_print->invalidate_step(psWipeTower);
             invalidated |= m_print->invalidate_step(psGCodeExport);
         } else {
@@ -1266,6 +1312,17 @@ bool PrintObject::invalidate_state_by_config_options(
     sort_remove_duplicates(steps);
     for (PrintObjectStep step : steps)
         invalidated |= this->invalidate_step(step);
+
+    // Changing extruder-related filament options invalidates the local-z plan,
+    // because the plan depends on which extruders are used for each sublayer.
+    // Without this, stale local-z data referencing removed extruders can cause crashes.
+    for (const std::string &opt_key : opt_keys) {
+        if (opt_key == "extruder" || opt_key == "wall_filament" ||
+            opt_key == "sparse_infill_filament" || opt_key == "solid_infill_filament") {
+            this->clear_local_z_plan();
+            break;
+        }
+    }
     return invalidated;
 }
 
@@ -1286,6 +1343,7 @@ bool PrintObject::invalidate_step(PrintObjectStep step)
 		invalidated |= this->invalidate_steps({ posPerimeters, posPrepareInfill, posInfill, posIroning, posSupportMaterial, posSimplifyPath, posSimplifyInfill });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
         m_slicing_params.valid = false;
+        this->clear_local_z_plan();
     } else if (step == posSupportMaterial) {
         invalidated |= this->invalidate_steps({ posSimplifySupportPath });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
@@ -1307,6 +1365,7 @@ bool PrintObject::invalidate_all_steps()
     bool result = Inherited::invalidate_all_steps() | m_print->invalidate_all_steps();
 	// Then reset some of the depending values.
 	m_slicing_params.valid = false;
+    this->clear_local_z_plan();
 	return result;
 }
 
@@ -1353,18 +1412,11 @@ void PrintObject::detect_surfaces_type()
             		// In non-spiral vase mode, go over all layers.
             		m_layers.size()),
             [this, region_id, interface_shells, &surfaces_new](const tbb::blocked_range<size_t>& range) {
-                // If we have soluble support material, don't bridge. The overhang will be squished against a soluble layer separating
-                // the support from the print.
-                // BBS: the above logic only applys for normal(auto) support. Complete logic:
-                // 1. has support, top z distance=0 (soluble material), auto support
-                // 2. for normal(auto), bridge_no_support is off
-                // 3. for tree(auto), interface top layers=0, max bridge length=0, support_critical_regions_only=false (only in this way the bridge is fully supported)
-                bool bottom_is_fully_supported = this->has_support() && m_config.support_top_z_distance.value == 0 && is_auto(m_config.support_type.value);
-                if (m_config.support_type.value == stNormalAuto)
-                    bottom_is_fully_supported &= !m_config.bridge_no_support.value;
-                else if (m_config.support_type.value == stTreeAuto) {
-                    bottom_is_fully_supported &= (m_config.support_interface_top_layers.value > 0 && m_config.max_bridge_length.value == 0 && m_config.support_critical_regions_only.value==false);
-                }
+                // Only normal automatic support may replace bridge infill with bottom infill
+                // on a zero-gap interface. Tree support contacts may be filtered or reduced,
+                // so even max_bridge_length == 0 does not guarantee full bottom coverage.
+                const bool bottom_is_fully_supported = this->has_support() && m_config.support_top_z_distance.value == 0 &&
+                                                       m_config.support_type.value == stNormalAuto && !m_config.bridge_no_support.value;
                 SurfaceType surface_type_bottom_other = bottom_is_fully_supported ? stBottom : stBottomBridge;
                 for (size_t idx_layer = range.begin(); idx_layer < range.end(); ++ idx_layer) {
                     m_print->throw_if_canceled();
@@ -3210,9 +3262,11 @@ void PrintObject::bridge_over_infill()
 void fos_stamp_per_nozzle_object(PrintObjectConfig &c);
 void fos_stamp_per_nozzle_region(PrintRegionConfig &c);
 
-static void clamp_exturder_to_default(ConfigOptionInt &opt, size_t num_extruders)
+// Clamp extruder IDs that exceed the total number of available filaments
+// (physical + virtual/mixed) back to the default extruder.
+static void clamp_exturder_to_default(ConfigOptionInt &opt, size_t num_total_filaments)
 {
-    if (opt.value > (int)num_extruders)
+    if (opt.value > (int)num_total_filaments)
         // assign the default extruder
         opt.value = 1;
 }
@@ -3453,9 +3507,560 @@ std::vector<unsigned int> PrintObject::object_extruders() const
     return extruders;
 }
 
-bool PrintObject::update_layer_height_profile(const ModelObject &model_object, const SlicingParameters &slicing_parameters, std::vector<coordf_t> &layer_height_profile)
+namespace {
+
+struct LayerHeightRangeOverride {
+    coordf_t lo { 0.f };
+    coordf_t hi { 0.f };
+    coordf_t height { 0.f };
+};
+
+struct MixedStateZRanges {
+    size_t state_id { 0 };
+    std::vector<t_layer_height_range> ranges;
+};
+
+struct MixedStateCadence {
+    size_t state_id { 0 };
+    coordf_t height_a { 0.f };
+    coordf_t height_b { 0.f };
+    std::vector<t_layer_height_range> ranges;
+};
+
+static void sort_and_merge_layer_ranges(std::vector<t_layer_height_range> &ranges)
+{
+    if (ranges.empty())
+        return;
+
+    std::sort(ranges.begin(), ranges.end(), [](const t_layer_height_range &a, const t_layer_height_range &b) {
+        return a.first < b.first || (a.first == b.first && a.second < b.second);
+    });
+
+    std::vector<t_layer_height_range> merged;
+    merged.reserve(ranges.size());
+    for (const t_layer_height_range &range : ranges) {
+        if (range.second <= range.first + EPSILON)
+            continue;
+
+        if (merged.empty() || range.first > merged.back().second + EPSILON) {
+            merged.emplace_back(range);
+        } else {
+            merged.back().second = std::max(merged.back().second, range.second);
+        }
+    }
+    ranges = std::move(merged);
+}
+
+static std::vector<t_layer_height_range> collect_mixed_painted_z_ranges(const PrintObject &print_object, coordf_t object_height)
+{
+    std::vector<t_layer_height_range> mixed_ranges;
+    const Print *print = print_object.print();
+    if (object_height <= EPSILON || print == nullptr)
+        return mixed_ranges;
+
+    const size_t num_physical = print->config().filament_colour.size();
+    const size_t num_total    = print->mixed_filament_manager().total_filaments(num_physical);
+    if (num_total <= num_physical)
+        return mixed_ranges;
+
+    const size_t max_state = std::min(num_total, size_t(EnforcerBlockerType::ExtruderMax));
+    std::vector<std::vector<t_layer_height_range>> per_state(max_state + 1);
+    const Transform3d object_to_print = print_object.trafo_centered();
+
+    for (const ModelVolume *mv : print_object.model_object()->volumes) {
+        if (mv == nullptr || !mv->is_model_part() || mv->mmu_segmentation_facets.empty())
+            continue;
+
+        const auto &used_states = mv->mmu_segmentation_facets.get_data().used_states;
+        if (used_states.empty())
+            continue;
+
+        const Transform3d volume_to_print = object_to_print * mv->get_matrix();
+        constexpr coordf_t thin_band = 0.01f;
+        for (size_t state_idx = num_physical + 1; state_idx <= max_state; ++state_idx) {
+            if (state_idx >= used_states.size() || !used_states[state_idx])
+                continue;
+
+            const auto facets = mv->mmu_segmentation_facets.get_facets_strict(*mv, static_cast<EnforcerBlockerType>(state_idx));
+            if (facets.indices.empty() || facets.vertices.empty())
+                continue;
+
+            auto &state_ranges = per_state[state_idx];
+            for (const auto &face : facets.indices) {
+                double tri_z_min = DBL_MAX;
+                double tri_z_max = -DBL_MAX;
+                for (int i = 0; i < 3; ++i) {
+                    const size_t vertex_idx = size_t(face[i]);
+                    if (vertex_idx >= facets.vertices.size())
+                        continue;
+                    const Vec3d p = volume_to_print * facets.vertices[vertex_idx].cast<double>();
+                    tri_z_min = std::min(tri_z_min, p.z());
+                    tri_z_max = std::max(tri_z_max, p.z());
+                }
+
+                if (tri_z_min == DBL_MAX || tri_z_max == -DBL_MAX)
+                    continue;
+
+                coordf_t lo = std::max<coordf_t>(0.f, coordf_t(tri_z_min));
+                coordf_t hi = std::min<coordf_t>(object_height, coordf_t(tri_z_max));
+                if (hi <= lo + EPSILON) {
+                    const coordf_t center = std::max<coordf_t>(0.f, std::min<coordf_t>(object_height, lo));
+                    lo = std::max<coordf_t>(0.f, center - thin_band * 0.5f);
+                    hi = std::min<coordf_t>(object_height, center + thin_band * 0.5f);
+                }
+                if (lo + EPSILON < hi)
+                    state_ranges.emplace_back(lo, hi);
+            }
+        }
+    }
+
+    for (size_t state_idx = num_physical + 1; state_idx <= max_state; ++state_idx) {
+        auto &state_ranges = per_state[state_idx];
+        if (state_ranges.empty())
+            continue;
+        sort_and_merge_layer_ranges(state_ranges);
+        mixed_ranges.insert(mixed_ranges.end(), state_ranges.begin(), state_ranges.end());
+    }
+
+    sort_and_merge_layer_ranges(mixed_ranges);
+    return mixed_ranges;
+}
+
+static std::vector<MixedStateZRanges> collect_mixed_painted_z_ranges_by_state(const PrintObject &print_object, coordf_t object_height)
+{
+    std::vector<MixedStateZRanges> out;
+    const Print *print = print_object.print();
+    if (object_height <= EPSILON || print == nullptr)
+        return out;
+
+    const size_t num_physical = print->config().filament_colour.size();
+    const size_t num_total    = print->mixed_filament_manager().total_filaments(num_physical);
+    if (num_total <= num_physical)
+        return out;
+
+    const size_t max_state = std::min(num_total, size_t(EnforcerBlockerType::ExtruderMax));
+    std::vector<std::vector<t_layer_height_range>> per_state(max_state + 1);
+    const Transform3d object_to_print = print_object.trafo_centered();
+
+    for (const ModelVolume *mv : print_object.model_object()->volumes) {
+        if (mv == nullptr || !mv->is_model_part() || mv->mmu_segmentation_facets.empty())
+            continue;
+
+        const auto &used_states = mv->mmu_segmentation_facets.get_data().used_states;
+        if (used_states.empty())
+            continue;
+
+        const Transform3d volume_to_print = object_to_print * mv->get_matrix();
+        constexpr coordf_t thin_band = 0.01f;
+        for (size_t state_idx = num_physical + 1; state_idx <= max_state; ++state_idx) {
+            if (state_idx >= used_states.size() || !used_states[state_idx])
+                continue;
+
+            const auto facets = mv->mmu_segmentation_facets.get_facets_strict(*mv, static_cast<EnforcerBlockerType>(state_idx));
+            if (facets.indices.empty() || facets.vertices.empty())
+                continue;
+
+            auto &state_ranges = per_state[state_idx];
+            for (const auto &face : facets.indices) {
+                double tri_z_min = DBL_MAX;
+                double tri_z_max = -DBL_MAX;
+                for (int i = 0; i < 3; ++i) {
+                    const size_t vertex_idx = size_t(face[i]);
+                    if (vertex_idx >= facets.vertices.size())
+                        continue;
+                    const Vec3d p = volume_to_print * facets.vertices[vertex_idx].cast<double>();
+                    tri_z_min = std::min(tri_z_min, p.z());
+                    tri_z_max = std::max(tri_z_max, p.z());
+                }
+
+                if (tri_z_min == DBL_MAX || tri_z_max == -DBL_MAX)
+                    continue;
+
+                coordf_t lo = std::max<coordf_t>(0.f, coordf_t(tri_z_min));
+                coordf_t hi = std::min<coordf_t>(object_height, coordf_t(tri_z_max));
+                if (hi <= lo + EPSILON) {
+                    const coordf_t center = std::max<coordf_t>(0.f, std::min<coordf_t>(object_height, lo));
+                    lo = std::max<coordf_t>(0.f, center - thin_band * 0.5f);
+                    hi = std::min<coordf_t>(object_height, center + thin_band * 0.5f);
+                }
+                if (lo + EPSILON < hi)
+                    state_ranges.emplace_back(lo, hi);
+            }
+        }
+    }
+
+    out.reserve(max_state > num_physical ? max_state - num_physical : 0);
+    for (size_t state_idx = num_physical + 1; state_idx <= max_state; ++state_idx) {
+        auto &state_ranges = per_state[state_idx];
+        if (state_ranges.empty())
+            continue;
+        sort_and_merge_layer_ranges(state_ranges);
+        if (!state_ranges.empty())
+            out.push_back({ state_idx, std::move(state_ranges) });
+    }
+    return out;
+}
+
+static std::vector<LayerHeightRangeOverride> base_layer_height_overrides(const t_layer_config_ranges &ranges, coordf_t object_height)
+{
+    std::vector<LayerHeightRangeOverride> out;
+    out.reserve(ranges.size());
+
+    coordf_t last_hi = 0.f;
+    for (const auto &[range, config] : ranges) {
+        coordf_t lo = std::max(range.first, last_hi);
+        coordf_t hi = std::min(range.second, object_height);
+        if (lo + EPSILON >= hi)
+            continue;
+
+        const ConfigOption *layer_height_opt = config.option("layer_height");
+        if (layer_height_opt == nullptr)
+            continue;
+
+        out.push_back({ lo, hi, coordf_t(layer_height_opt->getFloat()) });
+        last_hi = hi;
+    }
+    return out;
+}
+
+static bool contains_z(const std::vector<t_layer_height_range> &ranges, coordf_t z)
+{
+    for (const t_layer_height_range &range : ranges) {
+        if (z + EPSILON < range.first)
+            break;
+        if (z + EPSILON >= range.first && z < range.second - EPSILON)
+            return true;
+    }
+    return false;
+}
+
+static bool get_override_height(const std::vector<LayerHeightRangeOverride> &ranges, coordf_t z, coordf_t &height_out)
+{
+    for (const LayerHeightRangeOverride &range : ranges) {
+        if (z + EPSILON < range.lo)
+            break;
+        if (z + EPSILON >= range.lo && z < range.hi - EPSILON) {
+            height_out = range.height;
+            return true;
+        }
+    }
+    return false;
+}
+
+static t_layer_config_ranges layer_ranges_with_dithering(const t_layer_config_ranges &base_ranges_map,
+                                                         coordf_t                     object_height,
+                                                         coordf_t                     default_layer_height,
+                                                         const std::vector<t_layer_height_range> &mixed_ranges,
+                                                         coordf_t                     dithering_step)
+{
+    if (object_height <= EPSILON || mixed_ranges.empty() || dithering_step <= EPSILON)
+        return base_ranges_map;
+
+    const std::vector<LayerHeightRangeOverride> base_ranges = base_layer_height_overrides(base_ranges_map, object_height);
+
+    std::vector<coordf_t> boundaries;
+    boundaries.reserve(2 + base_ranges.size() * 2 + mixed_ranges.size() * 2);
+    boundaries.emplace_back(0.f);
+    boundaries.emplace_back(object_height);
+    for (const LayerHeightRangeOverride &range : base_ranges) {
+        boundaries.emplace_back(range.lo);
+        boundaries.emplace_back(range.hi);
+    }
+    for (const t_layer_height_range &range : mixed_ranges) {
+        boundaries.emplace_back(range.first);
+        boundaries.emplace_back(range.second);
+    }
+
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end(), [](coordf_t a, coordf_t b) {
+                        return std::abs(a - b) <= EPSILON;
+                    }),
+                     boundaries.end());
+
+    std::vector<LayerHeightRangeOverride> merged_ranges;
+    merged_ranges.reserve(boundaries.size());
+    for (size_t i = 1; i < boundaries.size(); ++i) {
+        const coordf_t lo = boundaries[i - 1];
+        const coordf_t hi = boundaries[i];
+        if (hi <= lo + EPSILON)
+            continue;
+
+        const coordf_t z_mid = 0.5f * (lo + hi);
+
+        coordf_t target_height = default_layer_height;
+        coordf_t base_height   = 0.f;
+        if (contains_z(mixed_ranges, z_mid)) {
+            target_height = dithering_step;
+        } else if (get_override_height(base_ranges, z_mid, base_height)) {
+            target_height = base_height;
+        }
+
+        if (std::abs(target_height - default_layer_height) <= EPSILON)
+            continue;
+
+        if (!merged_ranges.empty() &&
+            std::abs(merged_ranges.back().height - target_height) <= EPSILON &&
+            std::abs(merged_ranges.back().hi - lo) <= EPSILON) {
+            merged_ranges.back().hi = hi;
+        } else {
+            merged_ranges.push_back({ lo, hi, target_height });
+        }
+    }
+
+    t_layer_config_ranges out;
+    for (const LayerHeightRangeOverride &range : merged_ranges) {
+        if (range.hi <= range.lo + EPSILON)
+            continue;
+        ModelConfig cfg;
+        cfg.set_key_value("layer_height", new ConfigOptionFloat(range.height));
+        out.emplace(t_layer_height_range(range.lo, range.hi), std::move(cfg));
+    }
+    return out;
+}
+
+static bool mixed_state_heights(const MixedFilamentManager &mixed_mgr,
+                                size_t                     num_physical,
+                                size_t                     state_id,
+                                coordf_t                   lower_bound,
+                                coordf_t                   upper_bound,
+                                coordf_t                  &height_a,
+                                coordf_t                  &height_b)
+{
+    if (state_id <= num_physical)
+        return false;
+
+    const size_t idx = state_id - num_physical - 1;
+    const auto  &mixed = mixed_mgr.mixed_filaments();
+    if (idx >= mixed.size())
+        return false;
+
+    const int mix_b = std::clamp(mixed[idx].mix_b_percent, 0, 100);
+    const coordf_t pct_b = coordf_t(mix_b) / coordf_t(100.f);
+    const coordf_t pct_a = coordf_t(1.f) - pct_b;
+    const coordf_t lo = std::max<coordf_t>(0.01f, lower_bound);
+    const coordf_t hi = std::max<coordf_t>(lo, upper_bound);
+
+    height_a = std::max<coordf_t>(0.01f, lo + pct_a * (hi - lo));
+    height_b = std::max<coordf_t>(0.01f, lo + pct_b * (hi - lo));
+    return true;
+}
+
+static coordf_t mixed_state_height_at_z(const MixedStateCadence &state, coordf_t z)
+{
+    const coordf_t cycle = std::max<coordf_t>(0.01f, state.height_a + state.height_b);
+    coordf_t phase = std::fmod(std::max<coordf_t>(0.f, z), cycle);
+    if (phase < 0.f)
+        phase += cycle;
+    return (phase < state.height_a) ? state.height_a : state.height_b;
+}
+
+static void append_state_cadence_boundaries(std::vector<coordf_t> &boundaries,
+                                            const t_layer_height_range &range,
+                                            coordf_t                   height_a,
+                                            coordf_t                   height_b)
+{
+    const coordf_t cycle = height_a + height_b;
+    if (cycle <= EPSILON || range.second <= range.first + EPSILON)
+        return;
+
+    const int k_start = int(std::floor(range.first / cycle)) - 1;
+    coordf_t boundary = coordf_t(k_start) * cycle;
+    size_t guard = 0;
+    while (boundary <= range.second + cycle + EPSILON && guard++ < 200000) {
+        if (boundary > range.first + EPSILON && boundary < range.second - EPSILON)
+            boundaries.emplace_back(boundary);
+        const coordf_t split = boundary + height_a;
+        if (split > range.first + EPSILON && split < range.second - EPSILON)
+            boundaries.emplace_back(split);
+        boundary += cycle;
+    }
+}
+
+static t_layer_config_ranges layer_ranges_with_height_weighted_mixed(
+    const t_layer_config_ranges &base_ranges_map,
+    coordf_t                     object_height,
+    coordf_t                     default_layer_height,
+    const std::vector<MixedStateZRanges> &mixed_state_ranges,
+    const MixedFilamentManager  &mixed_mgr,
+    size_t                       num_physical,
+    coordf_t                     lower_bound,
+    coordf_t                     upper_bound)
+{
+    if (object_height <= EPSILON || mixed_state_ranges.empty())
+        return base_ranges_map;
+
+    const std::vector<LayerHeightRangeOverride> base_ranges = base_layer_height_overrides(base_ranges_map, object_height);
+
+    std::vector<MixedStateCadence> states;
+    states.reserve(mixed_state_ranges.size());
+    for (const MixedStateZRanges &state_ranges : mixed_state_ranges) {
+        coordf_t height_a = 0.f;
+        coordf_t height_b = 0.f;
+        if (!mixed_state_heights(mixed_mgr, num_physical, state_ranges.state_id, lower_bound, upper_bound, height_a, height_b))
+            continue;
+        states.push_back({ state_ranges.state_id, height_a, height_b, state_ranges.ranges });
+    }
+    if (states.empty())
+        return base_ranges_map;
+
+    std::vector<coordf_t> boundaries;
+    boundaries.reserve(2 + base_ranges.size() * 2 + states.size() * 64);
+    boundaries.emplace_back(0.f);
+    boundaries.emplace_back(object_height);
+    for (const LayerHeightRangeOverride &range : base_ranges) {
+        boundaries.emplace_back(range.lo);
+        boundaries.emplace_back(range.hi);
+    }
+    for (const MixedStateCadence &state : states) {
+        for (const t_layer_height_range &range : state.ranges) {
+            boundaries.emplace_back(range.first);
+            boundaries.emplace_back(range.second);
+            append_state_cadence_boundaries(boundaries, range, state.height_a, state.height_b);
+        }
+    }
+
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end(), [](coordf_t a, coordf_t b) {
+                        return std::abs(a - b) <= EPSILON;
+                    }),
+                     boundaries.end());
+
+    std::vector<LayerHeightRangeOverride> merged_ranges;
+    merged_ranges.reserve(boundaries.size());
+    for (size_t i = 1; i < boundaries.size(); ++i) {
+        const coordf_t lo = boundaries[i - 1];
+        const coordf_t hi = boundaries[i];
+        if (hi <= lo + EPSILON)
+            continue;
+
+        const coordf_t z_mid = 0.5f * (lo + hi);
+        coordf_t target_height = default_layer_height;
+        coordf_t base_height   = 0.f;
+        const bool has_base_override = get_override_height(base_ranges, z_mid, base_height);
+        if (has_base_override)
+            target_height = base_height;
+
+        bool has_mixed = false;
+        coordf_t mixed_height = target_height;
+        for (const MixedStateCadence &state : states) {
+            if (!contains_z(state.ranges, z_mid))
+                continue;
+            const coordf_t state_height = mixed_state_height_at_z(state, z_mid);
+            if (!has_mixed) {
+                mixed_height = state_height;
+                has_mixed = true;
+            } else {
+                mixed_height = std::min(mixed_height, state_height);
+            }
+        }
+        if (has_mixed)
+            target_height = mixed_height;
+
+        if (std::abs(target_height - default_layer_height) <= EPSILON)
+            continue;
+
+        if (!merged_ranges.empty() &&
+            std::abs(merged_ranges.back().height - target_height) <= EPSILON &&
+            std::abs(merged_ranges.back().hi - lo) <= EPSILON) {
+            merged_ranges.back().hi = hi;
+        } else {
+            merged_ranges.push_back({ lo, hi, target_height });
+        }
+    }
+
+    t_layer_config_ranges out;
+    for (const LayerHeightRangeOverride &range : merged_ranges) {
+        if (range.hi <= range.lo + EPSILON)
+            continue;
+        ModelConfig cfg;
+        cfg.set_key_value("layer_height", new ConfigOptionFloat(range.height));
+        out.emplace(t_layer_height_range(range.lo, range.hi), std::move(cfg));
+    }
+    return out;
+}
+
+} // namespace
+
+bool PrintObject::update_layer_height_profile(const ModelObject          &model_object,
+                                              const SlicingParameters    &slicing_parameters,
+                                              std::vector<coordf_t>      &layer_height_profile,
+                                              const PrintObject          *print_object)
 {
     bool updated = false;
+
+    const t_layer_config_ranges *ranges_to_use = &model_object.layer_config_ranges;
+    t_layer_config_ranges        mixed_gradient_ranges;
+    t_layer_config_ranges        dithering_ranges;
+    if (print_object != nullptr && print_object->print() != nullptr) {
+        const DynamicPrintConfig &full_cfg = print_object->print()->full_print_config();
+        const PrintConfig        &print_cfg = print_object->print()->config();
+
+        bool height_weighted_mode = print_cfg.mixed_filament_gradient_mode.value;
+        if (full_cfg.has("mixed_filament_gradient_mode")) {
+            if (const ConfigOptionBool *opt = full_cfg.option<ConfigOptionBool>("mixed_filament_gradient_mode"))
+                height_weighted_mode = opt->value;
+            else if (const ConfigOptionInt *opt = full_cfg.option<ConfigOptionInt>("mixed_filament_gradient_mode"))
+                height_weighted_mode = (opt->value != 0);
+        }
+
+        coordf_t mixed_lower = coordf_t(print_cfg.mixed_filament_height_lower_bound.value);
+        coordf_t mixed_upper = coordf_t(print_cfg.mixed_filament_height_upper_bound.value);
+        if (full_cfg.has("mixed_filament_height_lower_bound"))
+            mixed_lower = coordf_t(full_cfg.opt_float("mixed_filament_height_lower_bound"));
+        if (full_cfg.has("mixed_filament_height_upper_bound"))
+            mixed_upper = coordf_t(full_cfg.opt_float("mixed_filament_height_upper_bound"));
+        mixed_lower = std::max<coordf_t>(0.01f, mixed_lower);
+        mixed_upper = std::max<coordf_t>(mixed_lower, mixed_upper);
+
+        if (height_weighted_mode) {
+            const coordf_t object_height = slicing_parameters.object_print_z_uncompensated_height();
+            const auto mixed_states = collect_mixed_painted_z_ranges_by_state(*print_object, object_height);
+            if (!mixed_states.empty()) {
+                mixed_gradient_ranges = layer_ranges_with_height_weighted_mixed(*ranges_to_use,
+                                                                                object_height,
+                                                                                slicing_parameters.layer_height,
+                                                                                mixed_states,
+                                                                                print_object->print()->mixed_filament_manager(),
+                                                                                print_cfg.filament_colour.size(),
+                                                                                mixed_lower,
+                                                                                mixed_upper);
+                ranges_to_use = &mixed_gradient_ranges;
+            }
+        }
+
+        coordf_t                  dithering_step = coordf_t(print_object->print()->config().dithering_z_step_size.value);
+        bool                      local_z_mode = print_object->print()->config().dithering_local_z_mode.value;
+        bool                      painted_zones_only = print_object->print()->config().dithering_step_painted_zones_only.value;
+        if (full_cfg.has("dithering_z_step_size"))
+            dithering_step = coordf_t(full_cfg.opt_float("dithering_z_step_size"));
+        if (full_cfg.has("dithering_local_z_mode")) {
+            if (const ConfigOptionBool *opt = full_cfg.option<ConfigOptionBool>("dithering_local_z_mode"))
+                local_z_mode = opt->value;
+            else if (const ConfigOptionInt *opt = full_cfg.option<ConfigOptionInt>("dithering_local_z_mode"))
+                local_z_mode = (opt->value != 0);
+        }
+        if (full_cfg.has("dithering_step_painted_zones_only"))
+            painted_zones_only = full_cfg.opt_bool("dithering_step_painted_zones_only");
+
+        if (!height_weighted_mode && !local_z_mode && dithering_step > EPSILON) {
+            const coordf_t object_height = slicing_parameters.object_print_z_uncompensated_height();
+            std::vector<t_layer_height_range> mixed_ranges;
+            if (painted_zones_only)
+                mixed_ranges = collect_mixed_painted_z_ranges(*print_object, object_height);
+            else if (object_height > EPSILON)
+                mixed_ranges.emplace_back(0.f, object_height);
+
+            if (!mixed_ranges.empty()) {
+                dithering_ranges = layer_ranges_with_dithering(*ranges_to_use,
+                                                               object_height,
+                                                               slicing_parameters.layer_height,
+                                                               mixed_ranges,
+                                                               dithering_step);
+                ranges_to_use = &dithering_ranges;
+            }
+        }
+    }
+    const bool has_dithering_ranges = (ranges_to_use != &model_object.layer_config_ranges);
 
     if (layer_height_profile.empty()) {
         // use the constructor because the assignement is crashing on ASAN OsX
@@ -3474,9 +4079,13 @@ bool PrintObject::update_layer_height_profile(const ModelObject &model_object, c
             std::abs(layer_height_profile[layer_height_profile.size() - 2] - slicing_parameters.object_print_z_uncompensated_max + slicing_parameters.object_print_z_min) > 1e-3))
         layer_height_profile.clear();
 
-    if (layer_height_profile.empty() || layer_height_profile[1] != slicing_parameters.first_object_layer_height) {
+    // A differing first layer height must NOT force regeneration: doing so discards a valid
+    // variable layer height profile (e.g. loaded from a 3MF) and replaces it with a fixed-height
+    // profile. The first layer height is applied separately in generate_object_layers(), which
+    // hard-codes the first layer, so the profile's first segment does not need to match it here.
+    if (layer_height_profile.empty() || has_dithering_ranges) {
         //layer_height_profile = layer_height_profile_adaptive(slicing_parameters, model_object.layer_config_ranges, model_object.volumes);
-        layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, model_object.layer_config_ranges);
+        layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, *ranges_to_use);
         // The layer height profile is already compressed.
         updated = true;
     }
@@ -3832,9 +4441,9 @@ void PrintObject::combine_infill()
 
         // Limit the number of combined layers to the maximum height allowed by this regions' nozzle.
         //FIXME limit the layer height to max_layer_height
-        double nozzle_diameter = std::min(
-            this->print()->config().nozzle_diameter.get_at(region.config().sparse_infill_filament.value - 1),
-            this->print()->config().nozzle_diameter.get_at(region.config().solid_infill_filament.value - 1));
+        double nozzle_diameter = this->print()->config().nozzle_diameter.get_at(region.config().wall_filament.value - 1);
+        nozzle_diameter = std::min(nozzle_diameter, this->print()->config().nozzle_diameter.get_at(region.config().sparse_infill_filament.value - 1));
+        nozzle_diameter = std::min(nozzle_diameter, this->print()->config().nozzle_diameter.get_at(region.config().solid_infill_filament.value - 1));
         
         //Orca: Limit combination of infill to up to infill_combination_max_layer_height
         const double infill_combination_max_layer_height = region.config().infill_combination_max_layer_height.get_abs_value(nozzle_diameter);
@@ -3960,7 +4569,8 @@ void PrintObject::remove_bridges_from_contacts(
     float extrusion_width,
     PolysType* overhang_regions,
     float max_bridge_length,
-    bool break_bridge)
+    bool break_bridge,
+    std::vector<std::pair<ExPolygon, int>>* overhang_regions_with_type)
 {
     // Extrusion width accounts for the roundings of the extrudates.
     // It is the maximum widh of the extrudate.
@@ -4076,6 +4686,28 @@ void PrintObject::remove_bridges_from_contacts(
     else if (typeid(overhang_regions) == typeid(Polygons*)) {
         *(Polygons*)overhang_regions = diff(*overhang_regions, all_bridges, ApplySafetyOffset::Yes);
     }
+
+    // Keep an optional typed overhang list in sync by diffing against the same bridge set.
+    // Skip items whose bbox doesn't overlap the bridges bbox to avoid unnecessary Clipper calls.
+    if (overhang_regions_with_type != nullptr && !overhang_regions_with_type->empty() && !all_bridges.empty()) {
+        BoundingBox bridges_bbox = get_extents(all_bridges);
+        std::vector<std::pair<ExPolygon, int>> kept;
+        kept.reserve(overhang_regions_with_type->size());
+        bool any_trimmed = false;
+        for (auto &overhang_part : *overhang_regions_with_type) {
+            BoundingBox part_bbox = get_extents(overhang_part.first);
+            if (!bridges_bbox.overlap(part_bbox)) {
+                kept.emplace_back(std::move(overhang_part.first), overhang_part.second);
+                continue;
+            }
+            ExPolygons remaining = diff_ex({overhang_part.first}, all_bridges, ApplySafetyOffset::Yes);
+            any_trimmed = true;
+            for (auto &expoly : remaining)
+                kept.emplace_back(std::move(expoly), overhang_part.second);
+        }
+        if (any_trimmed)
+            *overhang_regions_with_type = std::move(kept);
+    }
 }
 
 template void PrintObject::remove_bridges_from_contacts<ExPolygons>(
@@ -4083,13 +4715,15 @@ template void PrintObject::remove_bridges_from_contacts<ExPolygons>(
     const Layer* current_layer,
     float extrusion_width,
     ExPolygons* overhang_regions,
-    float max_bridge_length, bool break_bridge);
+    float max_bridge_length, bool break_bridge,
+    std::vector<std::pair<ExPolygon, int>>* overhang_regions_with_type);
 template void PrintObject::remove_bridges_from_contacts<Polygons>(
     const Layer* lower_layer,
     const Layer* current_layer,
     float extrusion_width,
     Polygons* overhang_regions,
-    float max_bridge_length, bool break_bridge);
+    float max_bridge_length, bool break_bridge,
+    std::vector<std::pair<ExPolygon, int>>* overhang_regions_with_type);
 
 
 SupportNecessaryType PrintObject::is_support_necessary()

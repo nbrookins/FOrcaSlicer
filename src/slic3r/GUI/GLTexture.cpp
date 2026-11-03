@@ -10,6 +10,7 @@
 #include "OpenGLManager.hpp"
 #include "GUI_App.hpp"
 #include "GLModel.hpp"
+#include "GLSubTextureBindRenderer.hpp"
 
 #include <GL/glew.h>
 
@@ -33,6 +34,57 @@
 #include <wx/dcgraph.h>
 namespace Slic3r {
 namespace GUI {
+
+namespace {
+
+// Non-owning pointer temporarily set from GLCanvas3D::m_subTextureBindRenderer.get().
+GLSubTextureBindRenderer* s_activeSubTextureBindRenderer = nullptr;
+
+std::vector<unsigned char> GenerateNextRawMipmapLevel(const std::vector<unsigned char>& sourceData, int sourceWidth,
+                                                      int sourceHeight, int targetWidth, int targetHeight)
+{
+    std::vector<unsigned char> targetData(static_cast<size_t>(targetWidth) * static_cast<size_t>(targetHeight) * 4, 0);
+    if (sourceData.empty() || sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0)
+        return targetData;
+
+    for (int targetY = 0; targetY < targetHeight; ++targetY) {
+        const int sourceY0 = std::min(targetY * 2, sourceHeight - 1);
+        const int sourceY1 = std::min(sourceY0 + 1, sourceHeight - 1);
+        for (int targetX = 0; targetX < targetWidth; ++targetX) {
+            const int sourceX0 = std::min(targetX * 2, sourceWidth - 1);
+            const int sourceX1 = std::min(sourceX0 + 1, sourceWidth - 1);
+            const size_t sourceOffsets[4] = {
+                (static_cast<size_t>(sourceY0) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(sourceX0)) * 4,
+                (static_cast<size_t>(sourceY0) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(sourceX1)) * 4,
+                (static_cast<size_t>(sourceY1) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(sourceX0)) * 4,
+                (static_cast<size_t>(sourceY1) * static_cast<size_t>(sourceWidth) + static_cast<size_t>(sourceX1)) * 4
+            };
+            const size_t targetOffset = (static_cast<size_t>(targetY) * static_cast<size_t>(targetWidth) +
+                                         static_cast<size_t>(targetX)) * 4;
+
+            int alphaSum = 0;
+            int colorSums[3] = { 0, 0, 0 };
+            for (int sourceIndex = 0; sourceIndex < 4; ++sourceIndex) {
+                const int alpha = static_cast<int>(sourceData[sourceOffsets[sourceIndex] + 3]);
+                alphaSum += alpha;
+                for (int channel = 0; channel < 3; ++channel) {
+                    colorSums[channel] += static_cast<int>(sourceData[sourceOffsets[sourceIndex] + channel]) * alpha;
+                }
+            }
+
+            targetData[targetOffset + 3] = static_cast<unsigned char>(alphaSum / 4);
+            if (alphaSum == 0)
+                continue;
+
+            for (int channel = 0; channel < 3; ++channel)
+                targetData[targetOffset + channel] = static_cast<unsigned char>(colorSums[channel] / alphaSum);
+        }
+    }
+
+    return targetData;
+}
+
+} // namespace
 
 void GLTexture::Compressor::reset()
 {
@@ -163,7 +215,8 @@ bool GLTexture::load_from_svg_file(const std::string& filename, bool use_mipmaps
         return false;
 }
 
-bool GLTexture::load_from_raw_data(std::vector<unsigned char> data, unsigned int w, unsigned int h, bool apply_anisotropy)
+bool GLTexture::load_from_raw_data(std::vector<unsigned char> data, unsigned int w, unsigned int h,
+                                   bool apply_anisotropy, bool use_mipmaps)
 {
     m_width = w;
     m_height = h;
@@ -187,18 +240,21 @@ bool GLTexture::load_from_raw_data(std::vector<unsigned char> data, unsigned int
 
     glsafe(::glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)m_width, (GLsizei)m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)data.data()));
 
-    bool use_mipmaps = true;
     if (use_mipmaps) {
         // we manually generate mipmaps because glGenerateMipmap() function is not reliable on all graphics cards
         int lod_w = m_width;
         int lod_h = m_height;
         GLint level = 0;
+        std::vector<unsigned char> mipData = data;
         while (lod_w > 1 || lod_h > 1) {
             ++level;
-            lod_w = std::max(lod_w / 2, 1);
-            lod_h = std::max(lod_h / 2, 1);
-            n_pixels = lod_w * lod_h;
-            glsafe(::glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, (GLsizei)lod_w, (GLsizei)lod_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)data.data()));
+            const int nextLodW = std::max(lod_w / 2, 1);
+            const int nextLodH = std::max(lod_h / 2, 1);
+            mipData = GenerateNextRawMipmapLevel(mipData, lod_w, lod_h, nextLodW, nextLodH);
+            lod_w = nextLodW;
+            lod_h = nextLodH;
+            glsafe(::glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, (GLsizei)lod_w, (GLsizei)lod_h, 0, GL_RGBA,
+                                  GL_UNSIGNED_BYTE, (const void*)mipData.data()));
         }
 
         glsafe(::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level));
@@ -534,9 +590,18 @@ bool GLTexture::generate_from_text(const std::string &text_str, wxFont &font, wx
     glsafe(::glPixelStorei(GL_UNPACK_ALIGNMENT, 1));
     glsafe(::glGenTextures(1, &m_id));
     glsafe(::glBindTexture(GL_TEXTURE_2D, (GLuint)m_id));
-    if (OpenGLManager::are_compressed_textures_supported())
-        glsafe(::glTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, (GLsizei)m_width, (GLsizei)m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)data.data()));
-    else
+    if (OpenGLManager::are_compressed_textures_supported()) {
+        constexpr size_t kDxt5BlockPixels = 4u;  // DXT5 4×4 pixel blocks
+        constexpr size_t kDxt5BlockBytes  = 16u; // Each block is 16 bytes
+        size_t dxt5_blocks = ((static_cast<size_t>(m_width)  + kDxt5BlockPixels - 1u) / kDxt5BlockPixels)
+                           * ((static_cast<size_t>(m_height) + kDxt5BlockPixels - 1u) / kDxt5BlockPixels);
+        std::vector<unsigned char> compressed(dxt5_blocks * kDxt5BlockBytes, 0);
+        int compressed_size = 0;
+        rygCompress(compressed.data(), data.data(), m_width, m_height, 1, compressed_size);
+        compressed.resize(compressed_size);
+        glsafe(::glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,
+            (GLsizei)m_width, (GLsizei)m_height, 0, compressed_size, compressed.data()));
+    } else
         glsafe(::glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)m_width, (GLsizei)m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const void*)data.data()));
     glsafe(::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
     glsafe(::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
@@ -652,8 +717,60 @@ void GLTexture::render_texture(unsigned int tex_id, float left, float right, flo
     render_sub_texture(tex_id, left, right, bottom, top, FullTextureUVs);
 }
 
+bool GLTexture::BeginSubTextureBind(GLSubTextureBindRenderer* renderer)
+{
+    if (renderer == nullptr || s_activeSubTextureBindRenderer != nullptr)
+        return false;
+
+    if (!renderer->Begin())
+        return false;
+
+    s_activeSubTextureBindRenderer = renderer;
+    return true;
+}
+
+void GLTexture::EndSubTextureBind()
+{
+    if (s_activeSubTextureBindRenderer == nullptr)
+        return;
+
+    s_activeSubTextureBindRenderer->End();
+    s_activeSubTextureBindRenderer = nullptr;
+}
+
 void GLTexture::render_sub_texture(unsigned int tex_id, float left, float right, float bottom, float top, const GLTexture::Quad_UVs& uvs)
 {
+    if (s_activeSubTextureBindRenderer != nullptr) {
+        s_activeSubTextureBindRenderer->Render(tex_id, left, right, bottom, top, uvs);
+        return;
+    }
+
+    GLModel& model = InitModelForRenderImage();
+
+    // position and scale from normalized unit quad
+    const float center_x = (left + right) * 0.5f;
+    const float center_y = (bottom + top) * 0.5f;
+    const float scale_x  = (right - left);
+    const float scale_y  = (top - bottom);
+
+    Transform3d model_matrix = Transform3d::Identity();
+    model_matrix.data()[3 * 4 + 0] = center_x;
+    model_matrix.data()[3 * 4 + 1] = center_y;
+    model_matrix.data()[0 * 4 + 0] = scale_x;
+    model_matrix.data()[1 * 4 + 1] = scale_y;
+
+    // UV transform — maps unit UVs to sprite atlas sub-region
+    const float center_u = (uvs.right_bottom.u + uvs.left_bottom.u) * 0.5f;
+    const float center_v = (uvs.right_top.v + uvs.right_bottom.v) * 0.5f;
+    const float scale_u  = (uvs.right_bottom.u - uvs.left_bottom.u);
+    const float scale_v  = (uvs.right_bottom.v - uvs.right_top.v);
+
+    Matrix3f uv_matrix = Matrix3f::Identity();
+    uv_matrix(0, 2) = center_u;
+    uv_matrix(1, 2) = center_v;
+    uv_matrix(0, 0) = scale_u;
+    uv_matrix(1, 1) = scale_v;
+
     glsafe(::glEnable(GL_BLEND));
     glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
 
@@ -662,29 +779,12 @@ void GLTexture::render_sub_texture(unsigned int tex_id, float left, float right,
 
     glsafe(::glBindTexture(GL_TEXTURE_2D, (GLuint)tex_id));
 
-    GLModel::Geometry init_data;
-    init_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P2T2 };
-    init_data.reserve_vertices(4);
-    init_data.reserve_indices(6);
-
-    // vertices
-    init_data.add_vertex(Vec2f(left, bottom),  Vec2f(uvs.left_bottom.u, uvs.left_bottom.v));
-    init_data.add_vertex(Vec2f(right, bottom), Vec2f(uvs.right_bottom.u, uvs.right_bottom.v));
-    init_data.add_vertex(Vec2f(right, top),    Vec2f(uvs.right_top.u, uvs.right_top.v));
-    init_data.add_vertex(Vec2f(left, top),     Vec2f(uvs.left_top.u, uvs.left_top.v));
-
-    // indices
-    init_data.add_triangle(0, 1, 2);
-    init_data.add_triangle(2, 3, 0);
-
-    GLModel model;
-    model.init_from(std::move(init_data));
-
     GLShaderProgram* shader = wxGetApp().get_shader("flat_texture");
     if (shader != nullptr) {
         shader->start_using();
-        shader->set_uniform("view_model_matrix", Transform3d::Identity());
+        shader->set_uniform("view_model_matrix", model_matrix);
         shader->set_uniform("projection_matrix", Transform3d::Identity());
+        shader->set_uniform("u_uvTransformMatrix", uv_matrix);
         model.render();
         shader->stop_using();
     }
@@ -693,6 +793,34 @@ void GLTexture::render_sub_texture(unsigned int tex_id, float left, float right,
 
     glsafe(::glDisable(GL_TEXTURE_2D));
     glsafe(::glDisable(GL_BLEND));
+}
+
+GLModel& GLTexture::GetModelForRenderImage()
+{
+    static GLModel g_model_for_render_image;
+    return g_model_for_render_image;
+}
+
+GLModel& GLTexture::InitModelForRenderImage()
+{
+    auto& model = GetModelForRenderImage();
+    if (!model.is_initialized()) {
+        GLModel::Geometry init_data;
+        init_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3 };
+        init_data.reserve_vertices(4);
+        init_data.reserve_indices(6);
+
+        init_data.add_vertex(Vec3f(-0.5f, -0.5f, 0.0f)/*, Vec2f(-0.5f, 0.5f)*/);
+        init_data.add_vertex(Vec3f( 0.5f, -0.5f, 0.0f)/*, Vec2f( 0.5f, 0.5f)*/);
+        init_data.add_vertex(Vec3f( 0.5f,  0.5f, 0.0f)/*, Vec2f( 0.5f, -0.5f)*/);
+        init_data.add_vertex(Vec3f(-0.5f,  0.5f, 0.0f)/*, Vec2f(-0.5f, -0.5f)*/);
+
+        init_data.add_triangle(0, 1, 2);
+        init_data.add_triangle(2, 3, 0);
+
+        model.init_from(std::move(init_data));
+    }
+    return model;
 }
 
 static bool to_squared_power_of_two(const std::string& filename, int max_size_px, int& w, int& h)

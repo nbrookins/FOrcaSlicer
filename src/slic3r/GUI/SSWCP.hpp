@@ -17,6 +17,7 @@
 #include "slic3r/Utils/TimeoutMap.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "slic3r/Utils/MQTT.hpp"
+#include "libslic3r/SSWCPProtocol.hpp"
 
 
 using namespace nlohmann;
@@ -28,12 +29,18 @@ using tcp = asio::ip::tcp;
 #define UPDATE_PRIVACY_STATUS "sw_SubUserUpdatePrivacy"
 #define GET_PRIVACY_STATUS "sw_GetUserUpdatePrivacy"
 #define UPLOAD_CAMERA_TIMELAPSE "sw_UploadCameraTimelapse"
+#define UPLOAD_ASYNC_TIMELAPSE_INSTANCE "sw_UploadAsyncTimelapseInstance"
 #define DELETE_CAMERA_TIMELAPSE "sw_DeleteCameraTimelapse"
 #define GET_DEVICEDATA_STORAGESPACE "sw_GetDeviceDataStorageSpace"
-#define DOWNLOAD_FILE "sw_DownloadFile"
 #define DOWNLOAD_FILE_AND_OPEN "sw_DownLoadFileAndOpen"
 #define CANCEL_DOWNLOAD "sw_CancelDownload"
+#define SUBSCRIBE_DOWNLOAD_STATE "sw_SubscribeDownloadState"
+#define UNSUBSCRIBE_DOWNLOAD_STATE "sw_UnsubscribeDownloadState"
+#define DOWN_LOAD_FILE "sw_DownLoadFile"
 #define FILE_VIEW "sw_FileView"
+#define OPEN_TIMELAPSE_FOLDER "sw_OpenTimelapseFolder"
+#define GET_FILES_FROM_DIR "sw_GetFilesFromDir"
+#define NOTIFY_UPLOAD_TIMELASPE "sw_NotifyUploadTimelaspe"
 
 namespace Slic3r { namespace GUI {
 
@@ -141,22 +148,12 @@ public:
 
     static void on_mqtt_status_msg_arrived(std::shared_ptr<SSWCP_Instance> obj, const json& response);
 
-    static std::unordered_map<std::string, json> m_wcp_cache;
-
 private:
     // Test methods
     void sync_test();
     void async_test();
 
     void test_mqtt_request();
-
-    // Cache methods
-    void sw_SetCache();
-    void sw_GetCache();
-    void sw_RemoveCache();
-
-    void sw_SubscribeCacheKey();
-    void sw_UnsubscribeCacheKeys();
 
     // select tab
     void sw_SwitchTab();
@@ -187,14 +184,15 @@ private:
 
     // Sentry
     void sw_UploadEvent();
+    // SnapLog
+    void sw_SnapLog();
+
+    // Get software basic info
+    void sw_GetSoftwareInfo();
 
     // open network dialog
     void sw_OpenNetworkDialog();
 
-
-public:
-    // 抽象工具类函数
-    void update_filament_info(const json& objects, bool send_message = false);
 
 protected:
     std::thread m_work_thread; // Worker thread
@@ -244,80 +242,18 @@ private:
     void sw_connect();
     void sw_disconnect();
 
-    void sw_get_connect_machine();
-
     void sw_connect_other_device();
 
     void sw_get_pin_code();
 
-};
+    // Subscribe to foreground/background change events (event_id=205890)
+    void sw_SubscribeForegroundChange();
 
-// mqtt-agent
-class WebPresetDialog;
-class SSWCP_MqttAgent_Instance : public SSWCP_Instance
-{
-public:
-    SSWCP_MqttAgent_Instance(std::string cmd, const json& header, const json& data, std::string event_id, wxWebView* webview)
-        : SSWCP_Instance(cmd, header, data, event_id, webview)
-    {
-        m_type = MQTT_AGENT;
-    }
-
-    ~SSWCP_MqttAgent_Instance()
-    {
-        if (m_work_thread.joinable())
-            m_work_thread.detach();
-    }
-
-    void process() override;
-
-public:
-    static std::unordered_map<wxWebView*, std::pair<std::string, std::shared_ptr<MqttClient>>> m_mqtt_engine_map; // (id, client)
-    static std::mutex                                          m_engine_map_mtx;
-
-    static std::map<std::pair<std::string, wxWebView*>, std::string> m_subscribe_map;          // ((event_id, webview), topic)
-    static std::map<std::pair<std::string, wxWebView*>, std::weak_ptr<SSWCP_Instance>> m_subscribe_instance_map; // ((event_id, webview), instance)
-
-    static WebPresetDialog* m_dialog;
-
-public:
-    bool validate_id(const std::string& id);
-    std::shared_ptr<MqttClient> get_current_engine() {
-        m_engine_map_mtx.lock();
-        std::shared_ptr<MqttClient> ptr = nullptr;
-        if (m_mqtt_engine_map.count(m_webview)) {
-            ptr = m_mqtt_engine_map[m_webview].second;
-        } 
-        
-        m_engine_map_mtx.unlock();
-
-        return ptr;
-    }
-    bool set_current_engine(const std::pair<std::string, std::shared_ptr<MqttClient>>& target) {
-        bool flag = true;
-        m_engine_map_mtx.lock();
-        m_mqtt_engine_map[m_webview] = target;
-        
-        m_engine_map_mtx.unlock();
-        return flag;
-    }
-
-    void set_Instance_illegal() override;
-
-private:
-
-    void sw_create_mqtt_client();
-    void sw_mqtt_connect();
-    void sw_mqtt_disconnect();
-    void sw_mqtt_subscribe();
-    void sw_mqtt_unsubscribe();
-    void sw_mqtt_publish();
-    void sw_mqtt_set_engine();
-
-private:
-    void clean_current_engine();
-
-    static void mqtt_msg_cb(const std::string& topic, const std::string& payload, void* client);
+    // Owns the one-shot pin-code MQTT client (sw_get_pin_code). Released on
+    // the UI thread after the response — never from a Paho callback thread,
+    // where destroying a client is not allowed.
+    static std::shared_ptr<MqttClient> m_pin_client;
+    static void release_pin_client() { m_pin_client.reset(); }
 
 };
 
@@ -383,14 +319,6 @@ private:
     // Machine option methods
     void sw_SendGCodes();
     void sw_FileGetStatus();
-    void sw_SystemGetDeviceInfo();
-    void sw_GetMachineState();
-    void sw_GetPrintInfo();
-    void sw_SubscribeMachineState();
-    void sw_UnSubscribeMachineState();
-    void sw_GetMachineObjects();
-    void sw_SetMachineSubscribeFilter();
-    void sw_GetSystemInfo();
     void sw_MachinePrintStart();
     void sw_MachinePrintPause();
     void sw_MachinePrintResume();
@@ -409,6 +337,9 @@ private:
     void sw_GetFileFilamentMapping();
     void sw_SetFilamentMappingComplete();
     void sw_FinishFilamentMapping();
+    // sw_FinishFilamentMapping post-close handlers, one per FinishFilamentMappingEvent.
+    // Add a new handler here when a new event value is introduced.
+    void on_finish_filament_mapping_custom_flow_regroup();
 
     // new
     void sw_SetDeviceName();
@@ -424,10 +355,12 @@ private:
     void sw_exception_query();
     void sw_GetFileListPage();
     void sw_UploadCameraTimelapse();
+    void sw_UploadAsyncTimelapseInstance();
     void sw_DeleteCameraTimelapse();
     void sw_GetCameraTimelapseInstance();
 
     void sw_DefectDetactionConfig();    
+    void sw_PrinterDefectDetection();
 
     void sw_GetDeviceDataStorageSpace();
 
@@ -441,57 +374,26 @@ private:
 
     // get is legal to send & print
     void sw_GetPrintLegal();
-
-    // get 打印任务zip流
-    void sw_GetPrintZip();
-
-    // 结束预打印流程
-    void sw_FinishPreprint();
-
-    // 设置已绑定用户信息
+    
+    void sw_GetPrintZip();    
+    void sw_FinishPreprint();    
     void sw_ServerClientManagerSetUserinfo();
 
-    // 请求设备下载文件并打印
+    // request device download file and print
     void sw_PullCloudFile();
 
-    // 请求设备取消下载文件
+    // request deivice cancel download file
     void sw_CancelPullCloudFile();
 
-    // 请求设备下载文件并打印
+    // request device download file and print
     void sw_StartCloudPrint();
 
-    // 设备耗材同步
-    void sw_UpdateMachineFilamentInfo();
+    // Request device to start local file print
+    void sw_StartLocalPrint();
 
+    // Request device heartbeat
+    void sw_MachineHeartbeat();
 
-};
-
-// Instance class for Snapmaker machine manage
-class SSWCP_MachineManage_Instance : public SSWCP_Instance
-{
-public:
-    SSWCP_MachineManage_Instance(std::string cmd, const json& header, const json& data, std::string event_id, wxWebView* webview)
-        : SSWCP_Instance(cmd, header, data, event_id, webview)
-    {
-        m_type = MACHINE_MANAGE;
-    }
-
-    ~SSWCP_MachineManage_Instance() {}
-
-    void process() override;
-
-private:
-    void sw_GetLocalDevices();
-    
-    void sw_AddDevice();
-
-    void sw_SubscribeLocalDevices();
-
-    void sw_RenameDevice();
-
-    void sw_SwitchModel();
-
-    void sw_DeleteDevices();
 };
 
 // Instance class for page state change subscription
@@ -529,27 +431,46 @@ public:
     void process() override;
 
 private:
-    void sw_UserLogin();
-
-    void sw_UserLogout();
-
-    void sw_GetUserLoginState();
-
-    void sw_SubscribeUserLoginState();
-
     void sw_GetUserUpdatePrivacy();
 
     void sw_SubUserUpdatePrivacy();
-
-    void sw_DownloadFile();
 
     void sw_DownloadFileAndOpen();
 
     void sw_DownloadFileEx();
 
+    void sw_DownLoadFile();
+
     void sw_CancelDownload();
 
     void sw_FileView();
+    void sw_OpenTimelapseFolder();
+    void sw_SubscribeDownloadState();
+    void sw_UnsubscribeDownloadState();
+    void sw_GetFilesFromDir();
+    void sw_NotifyUploadTimelaspe();
+
+public:
+    // Passive subscription entry — sw_SubscribeDownloadState only registers,
+    // downloads are triggered by sw_DownLoadFile which pushes "download_complete"
+    // to matching subscribers on completion.
+    struct SubscribeInfo {
+        std::string event_id;
+        std::string sn;
+        std::string type;     // "timelapse"
+        wxWebView*  webview;  // not owned — captured so we can push events after the caller instance is gone
+    };
+    static std::unordered_map<std::string, std::shared_ptr<SubscribeInfo>> m_subscribe_map;  // event_id -> info
+
+    // Push a single file's download state to every subscriber whose sn matches.
+    // Does NOT remove subscribers (can be called multiple times).
+    // state: "success" | "failed" | "cancelled"
+    static void push_timelapse_state(const std::string& sn,
+                                     const std::string& file_name,
+                                     const std::string& file_url,
+                                     const std::string& date_index,
+                                     const std::string& save_path,
+                                     const std::string& state);
 };
 
 // Instance class for homepage business
@@ -597,17 +518,16 @@ public:
     // Delete instance
     static void delete_target(SSWCP_Instance* target);
 
+    // Extend a one-shot instance's timeout by the default timeout; used by
+    // long-running modal commands so their pending response is not dropped
+    // after the default 80 s.
+    static void renew_instance_timeout(SSWCP_Instance* instance);
+
     // Stop machine discovery
     static void stop_machine_find();
 
-    // Stop machine subscription
-    static void stop_subscribe_machine();
-
     // Handle webview deletion
     static void on_webview_delete(wxWebView* webview);
-
-    // query the info of the machine
-    static bool query_machine_info(std::shared_ptr<PrintHost>& host, std::string& out_model, std::vector<std::string>& out_nozzle_diameters, std::string& device_name, int timeout_second = 5);
 
     // update the active file name
     static void update_active_filename(const std::string& filename);
@@ -620,10 +540,14 @@ public:
 
     static std::string get_display_filename();
 
+    static nlohmann::json build_active_file_metadata();
+    static nlohmann::json build_active_file_json(const std::string& file_path, const std::string& file_name, bool is_zip = false);
+    static nlohmann::json build_filament_mapping_json(const std::string& filename, const std::string& display_name);
+
     static std::mutex m_file_size_mutex;
     static long long m_active_file_size;
-    
-    
+
+
     static std::unordered_map<std::string, int> m_tab_map; // for switching tab
 
 private:
@@ -632,8 +556,6 @@ private:
     static std::unordered_set<std::string> m_machine_connect_cmd_list;  // Machine connect commands
     static std::unordered_set<std::string> m_project_cmd_list; // homepage project commands
     static std::unordered_set<std::string> m_login_cmd_list; // homepage login commands
-    static std::unordered_set<std::string> m_machine_manage_cmd_list; // homepage machine manage commands;
-    static std::unordered_set<std::string> m_mqtt_agent_cmd_list; // mqtt-agent commands;
     static std::unordered_set<std::string> m_page_state_cmd_list; // page state change commands;
 
     static TimeoutMap<SSWCP_Instance*, std::shared_ptr<SSWCP_Instance>> m_instance_list;  // Active instances
@@ -641,6 +563,7 @@ private:
 
     static std::string m_active_gcode_filename; // name of the file which is pretend to be upload and print
     static std::string m_display_gcode_filename; // name for display
+
 }; 
 
 class MachineIPType
@@ -650,22 +573,17 @@ public:
 
     void add_instance(const std::string& ip, const std::string& machine_type)
     {
-        m_map_mtx.lock();
+        std::lock_guard<std::mutex> lock(m_map_mtx);
         m_ip_type_map[ip] = machine_type;
-        m_map_mtx.unlock();
     }
 
     bool get_machine_type(const std::string& ip, std::string& output)
     {
-        bool res = true;
-        m_map_mtx.lock();
-        if (m_ip_type_map.count(ip)) {
-            output = m_ip_type_map[ip];
-        } else {
-            res = false;
-        }
-        m_map_mtx.unlock();
-        return res;
+        std::lock_guard<std::mutex> lock(m_map_mtx);
+        auto it = m_ip_type_map.find(ip);
+        if (it == m_ip_type_map.end()) return false;
+        output = it->second;
+        return true;
     }
 
 private:
@@ -673,6 +591,9 @@ private:
     std::unordered_map<std::string, std::string> m_ip_type_map;
 
 };
+
+std::string base64_encode(const char* data, size_t len);
+std::string make_wcp_download_url(const std::string& file_path);
 
 }};
 

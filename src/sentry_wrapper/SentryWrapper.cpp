@@ -259,7 +259,7 @@ void initSentryEx()
 #endif
 
         //sentry_options_set_environment(options, "develop");
-        sentry_options_set_environment(options, "Release");
+        sentry_options_set_environment(options, "alpha");
 
         sentry_options_set_auto_session_tracking(options, 0);
         sentry_options_set_symbolize_stacktraces(options, 1);
@@ -310,17 +310,14 @@ void initSentryEx()
             
             sentry_set_tag("snapmaker_version", Snapmaker_VERSION);
 
-            std::string flutterVersion = common::get_flutter_version();
-            if (!flutterVersion.empty())
-                sentry_set_tag("flutter_version", flutterVersion.c_str());
-
             std::string machineID = common::getMachineId();
             if (!machineID.empty())
                 sentry_set_tag("machine_id", machineID.c_str());
 
-            std::string pcName = common::get_pc_name();
-            if (!pcName.empty())
-                sentry_set_tag("pc_name", pcName.c_str());
+            // PC name is personal data; intentionally disabled for privacy.
+            // std::string pcName = common::get_pc_name();
+            // if (!pcName.empty())
+            //     sentry_set_tag("pc_name", pcName.c_str());
         } else {            
             set_sentry_flags(false);            
         }
@@ -371,16 +368,12 @@ void sentryReportLogEx(SENTRY_LOG_LEVEL   logLevel,
     sentry_value_t attr = sentry_value_new_attribute(sentry_value_new_string(Snapmaker_VERSION), NULL);
     sentry_value_set_by_key(tags, "snapmaker_version", attr);
 
-    std::string flutterVersion = common::get_flutter_version();
-    if (!flutterVersion.empty()) {
-        sentry_value_t attr = sentry_value_new_attribute(sentry_value_new_string(flutterVersion.c_str()), NULL);
-        sentry_value_set_by_key(tags, "flutter_version", attr);
-    }
-    std::string pcName = common::get_pc_name();
-    if (!pcName.empty()) {
-        sentry_value_t attr = sentry_value_new_attribute(sentry_value_new_string(pcName.c_str()), NULL);
-        sentry_value_set_by_key(tags, "pc_name", attr);
-    }
+    // PC name is personal data; intentionally disabled for privacy.
+    // std::string pcName = common::get_pc_name();
+    // if (!pcName.empty()) {
+    //     sentry_value_t attr = sentry_value_new_attribute(sentry_value_new_string(pcName.c_str()), NULL);
+    //     sentry_value_set_by_key(tags, "pc_name", attr);
+    // }
     static std::string machineID = "";
     if (machineID.empty())
         machineID = common::getMachineId();

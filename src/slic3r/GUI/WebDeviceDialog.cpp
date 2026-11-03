@@ -16,16 +16,12 @@ END_EVENT_TABLE()
 WebDeviceDialog::WebDeviceDialog()
     : wxDialog((wxWindow*)(wxGetApp().mainframe), wxID_ANY, _L("Add Device"))
 {
-    m_device_url = wxGetApp().flutter_web_url("discovery");
+    m_device_url = wxGetApp().gateway_web_url("device_control");
 
     SetBackgroundColour(*wxWHITE);
 
-    // Create the webview
-
-    // 语言判断
-    wxString target_url = wxGetApp().get_international_url(m_device_url);
-
-    m_browser = WebView::CreateWebView(this, target_url);
+    // Create blank; run() loads the gateway URL once (same pattern as WebPreprintDialog / #679).
+    m_browser = WebView::CreateWebView(this, "about:blank");
     if (m_browser == nullptr) {
         wxLogError("Could not init m_browser");
         return;
@@ -60,8 +56,7 @@ WebDeviceDialog::~WebDeviceDialog()
 
 void WebDeviceDialog::reload()
 {
-    wxString target_url = wxGetApp().get_international_url(m_device_url);
-    load_url(target_url);
+    load_url(m_device_url);
 }
 
 void WebDeviceDialog::load_url(wxString &url)
@@ -137,4 +132,4 @@ void WebDeviceDialog::OnClose(wxCloseEvent& evt)
     evt.Skip();
 }
 
-}} // namespace Slic3r::GUI 
+}} // namespace Slic3r::GUI

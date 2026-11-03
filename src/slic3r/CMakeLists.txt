@@ -50,6 +50,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/BitmapComboBox.hpp
     GUI/BonjourDialog.cpp
     GUI/BonjourDialog.hpp
+    GUI/BufferTexture.cpp
+    GUI/BufferTexture.hpp
     GUI/calib_dlg.cpp
     GUI/calib_dlg.hpp
     GUI/Calibration.cpp
@@ -109,8 +111,33 @@ set(SLIC3R_GUI_SOURCES
     GUI/ExtrusionCalibration.hpp
     GUI/Field.cpp
     GUI/Field.hpp
+    GUI/FilamentColorUtils.cpp
+    GUI/FilamentColorUtils.hpp
+    GUI/FilamentGroupDialog.cpp
+    GUI/FilamentGroupDialog.hpp
     GUI/FileArchiveDialog.cpp
     GUI/FileArchiveDialog.hpp
+    GUI/FlowTypeHelper.cpp
+    GUI/FlowTypeHelper.hpp
+    GUI/HighFlowCompat.cpp
+    GUI/HighFlowCompat.hpp
+    GUI/filamentsync/FilamentColorMapBox.cpp
+    GUI/filamentsync/FilamentColorMapBox.hpp
+    GUI/filamentsync/FilamentColorMapBoxGroup.cpp
+    GUI/filamentsync/FilamentColorMapBoxGroup.hpp
+    GUI/filamentsync/FilamentData.hpp
+    GUI/filamentsync/FilamentScrollBar.cpp
+    GUI/filamentsync/FilamentScrollBar.hpp
+    GUI/filamentsync/FilamentSyncAlgorithm.cpp
+    GUI/filamentsync/FilamentSyncAlgorithm.hpp
+    GUI/filamentsync/MachineFilamentPicker.cpp
+    GUI/filamentsync/MachineFilamentPicker.hpp
+    GUI/filamentsync/PlaterPreview.cpp
+    GUI/filamentsync/PlaterPreview.hpp
+    GUI/filamentsync/SyncConfirmDialog.cpp
+    GUI/filamentsync/SyncConfirmDialog.hpp
+    GUI/filamentsync/SyncFilamentColorDialog.cpp
+    GUI/filamentsync/SyncFilamentColorDialog.hpp
     GUI/format.hpp
     GUI/GCodeViewer.cpp
     GUI/GCodeViewer.hpp
@@ -174,8 +201,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/GLShader.hpp
     GUI/GLShadersManager.cpp
     GUI/GLShadersManager.hpp
+    GUI/GLSubTextureBindRenderer.cpp
+    GUI/GLSubTextureBindRenderer.hpp
     GUI/GLTexture.cpp
     GUI/GLTexture.hpp
+    GUI/GLToolbarBackgroundTextureCache.cpp
+    GUI/GLToolbarBackgroundTextureCache.hpp
     GUI/GLToolbar.cpp
     GUI/GLToolbar.hpp
     GUI/GUI_App.cpp
@@ -311,8 +342,24 @@ set(SLIC3R_GUI_SOURCES
     GUI/NotificationManager.hpp
     GUI/OAuthDialog.cpp
     GUI/OAuthDialog.hpp
+    GUI/MixedFilamentDialog.cpp
+    GUI/MixedFilamentDialog.hpp
+    GUI/MixedFilamentBatchDialog.cpp
+    GUI/MixedFilamentBatchDialog.hpp
+    GUI/MixedGradientSelector.hpp
+    GUI/MixedGradientSelector.cpp
+    GUI/MixedColorMatchPanel.cpp
+    GUI/MixedColorMatchPanel.hpp
+    GUI/MixedColorMatchHelpers.hpp
+    GUI/MixedColorMatchHelpers.cpp
+    GUI/MixedFilamentColorMapPanel.hpp
+    GUI/MixedFilamentColorMapPanel.cpp
+    GUI/MixedFilamentBadge.cpp
+    GUI/MixedFilamentBadge.hpp
     GUI/ObjColorDialog.cpp
     GUI/ObjColorDialog.hpp
+    GUI/FilamentColorDialog.cpp
+    GUI/FilamentColorDialog.hpp
     GUI/ObjectDataViewModel.cpp
     GUI/ObjectDataViewModel.hpp
     GUI/OG_CustomCtrl.cpp
@@ -327,6 +374,10 @@ set(SLIC3R_GUI_SOURCES
     GUI/ParamsPanel.hpp
     GUI/PartPlate.cpp
     GUI/PartPlate.hpp
+    GUI/PathData.cpp
+    GUI/PathData.hpp
+    GUI/PathRenderer.cpp
+    GUI/PathRenderer.hpp
     GUI/PhysicalPrinterDialog.cpp
     GUI/PhysicalPrinterDialog.hpp
     GUI/Plater.cpp
@@ -338,6 +389,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/Preferences.hpp
     GUI/PresetComboBoxes.cpp
     GUI/PresetComboBoxes.hpp
+    GUI/FilamentDropDown.cpp
+    GUI/FilamentDropDown.hpp
+    GUI/FilamentSort.cpp
+    GUI/FilamentSort.hpp
+    GUI/PlaterFilamentComboBox.cpp
+    GUI/PlaterFilamentComboBox.hpp
     GUI/PresetHints.cpp
     GUI/PresetHints.hpp
     GUI/PrinterCloudAuthDialog.cpp
@@ -390,6 +447,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/SingleChoiceDialog.hpp
     GUI/SliceInfoPanel.cpp
     GUI/SliceInfoPanel.hpp
+    GUI/SliceModePopup.cpp
+    GUI/SliceModePopup.hpp
     GUI/SlicingProgressNotification.cpp
     GUI/SlicingProgressNotification.hpp
     GUI/StatusPanel.cpp
@@ -408,6 +467,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/TaskManager.hpp
     GUI/TextLines.cpp
     GUI/TextLines.hpp
+    GUI/ThumbnailView.hpp
     GUI/TickCode.cpp
     GUI/TickCode.hpp
     GUI/UnsavedChangesDialog.cpp
@@ -470,6 +530,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Widgets/Scrollbar.hpp
     GUI/Widgets/ScrolledWindow.cpp
     GUI/Widgets/ScrolledWindow.hpp
+    GUI/Widgets/SegmentedToggle.cpp
+    GUI/Widgets/SegmentedToggle.hpp
     GUI/Widgets/SideButton.cpp
     GUI/Widgets/SideButton.hpp
     GUI/Widgets/SideMenuPopup.cpp
@@ -509,10 +571,10 @@ set(SLIC3R_GUI_SOURCES
     GUI/DownloadManager.hpp
     GUI/GenericDownloadDialog.cpp
     GUI/GenericDownloadDialog.hpp
+    GUI/Timelapse/TimelapseDownloadPopup.cpp
+    GUI/Timelapse/TimelapseDownloadPopup.hpp
     GUI/WebPresetDialog.hpp
     GUI/WebPresetDialog.cpp
-    GUI/WebSMUserLoginDialog.cpp
-    GUI/WebSMUserLoginDialog.hpp
     GUI/WebDeviceDialog.cpp
     GUI/WebDeviceDialog.hpp
     GUI/WebPreprintDialog.hpp
@@ -528,10 +590,14 @@ set(SLIC3R_GUI_SOURCES
     Utils/bambu_networking.hpp
     Utils/Bonjour.cpp
     Utils/Bonjour.hpp
+    Utils/CpuMemory.cpp
+    Utils/CpuMemory.hpp
     Utils/CalibUtils.cpp
     Utils/CalibUtils.hpp
     Utils/ColorSpaceConvert.cpp
     Utils/ColorSpaceConvert.hpp
+    Utils/ConnectionProcessManager.cpp
+    Utils/ConnectionProcessManager.hpp
     Utils/CrealityPrint.cpp
     Utils/CrealityPrint.hpp
     Utils/Duet.cpp
@@ -544,6 +610,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/ESP3D.hpp
     Utils/FileHelp.cpp
     Utils/FileHelp.hpp
+    Utils/FileDecrypt.cpp
+    Utils/FileDecrypt.hpp
     Utils/FixModelByWin10.cpp
     Utils/FixModelByWin10.hpp
     Utils/FlashAir.cpp
@@ -552,6 +620,16 @@ set(SLIC3R_GUI_SOURCES
     Utils/Flashforge.hpp
     Utils/FontConfigHelp.cpp
     Utils/FontConfigHelp.hpp
+    Utils/Frustum.cpp
+    Utils/Frustum.hpp
+    Utils/GatewayProtocol.cpp
+    Utils/GatewayProtocol.hpp
+    Utils/GatewayDevice.cpp
+    Utils/GatewayDevice.hpp
+    Utils/GatewayAccount.cpp
+    Utils/GatewayAccount.hpp
+    Utils/GatewayService.cpp
+    Utils/GatewayService.hpp
     Utils/HexFile.cpp
     Utils/HexFile.hpp
     Utils/Http.cpp
@@ -566,6 +644,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/MKS.hpp
     Utils/NetworkAgent.cpp
     Utils/NetworkAgent.hpp
+    Utils/SnapLogClient.cpp
+    Utils/SnapLogClient.hpp
     Utils/Obico.cpp
     Utils/Obico.hpp
     Utils/OctoPrint.cpp
@@ -677,7 +757,7 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SLIC3R_GUI_SOURCES})
 encoding_check(libslic3r_gui)
 
 find_package(libnoise REQUIRED)
-target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo GLEW::GLEW OpenGL::GL hidapi ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise)
+target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo GLEW::GLEW OpenGL::GL hidapi ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise nanosvg)
 
 if (MSVC)
     target_link_libraries(libslic3r_gui Setupapi.lib)

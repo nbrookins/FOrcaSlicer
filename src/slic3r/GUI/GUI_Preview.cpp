@@ -14,6 +14,7 @@
 #include "Plater.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
+#include "MsgDialog.hpp"
 
 #include <wx/listbook.h>
 #include <wx/notebook.h>
@@ -585,7 +586,7 @@ void Preview::update_layers_slider(const std::vector<double>& layers_z, bool kee
     check_layers_slider_values(ticks_info_from_curr_plate.gcodes, layers_z);
 
     // first of all update extruder colors to avoid crash, when we are switching printer preset from MM to SM
-    m_layers_slider->SetExtruderColors(plater->get_extruder_colors_from_plater_config(wxGetApp().is_editor() ? nullptr : m_gcode_result));
+    m_layers_slider->SetExtruderColors(plater->get_extruder_colors_from_plater_config(plater->only_gcode_mode() ? m_gcode_result : nullptr));
     m_layers_slider->SetSliderValues(layers_z);
     assert(m_layers_slider->GetMinValue() == 0);
     m_layers_slider->SetMaxValue(layers_z.empty() ? 0 : layers_z.size() - 1);
@@ -671,6 +672,9 @@ void Preview::load_print_as_fff(bool keep_z_range, bool only_gcode)
     // populated and we know the number of layers)
     bool has_layers = false;
     //BBS: always load shell at preview
+    // Always load shells: they use the model's existing triangle data
+    // (already in memory) and are lightweight compared to toolpath GPU
+    // buffers. Only the toolpath rendering is skipped when the flag is set.
     load_shells(*print, true);
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" %1%: print: %2%, gcode_result %3%, check started")%__LINE__ %print %m_gcode_result;
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: print is step done, posSlice %2%, posSupportMaterial %3%, psGCodeExport %4%") % __LINE__ % print->is_step_done(posSlice) %print->is_step_done(posSupportMaterial) % print->is_step_done(psGCodeExport);
@@ -735,7 +739,7 @@ void Preview::load_print_as_fff(bool keep_z_range, bool only_gcode)
             //BBS: add more log
             BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": will load gcode_preview from result, moves count %1%") % m_gcode_result->moves.size();
             //BBS: add only gcode mode
-            m_canvas->load_gcode_preview(*m_gcode_result, colors, only_gcode);
+            m_canvas->load_gcode_preview(*m_gcode_result, colors, only_gcode, m_skip_toolpath_preview);
             //BBS show sliders
             show_moves_sliders();
 

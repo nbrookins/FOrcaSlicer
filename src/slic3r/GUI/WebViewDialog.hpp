@@ -110,8 +110,6 @@ public:
 private:
 
     wxWebView* m_browser;
-    wxString   m_initial_url;
-    int        m_nav_error_retries{0};
     wxBoxSizer *bSizer_toolbar;
     wxButton *  m_button_back;
     wxButton *  m_button_forward;

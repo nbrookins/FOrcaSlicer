@@ -1386,6 +1386,9 @@ wxString ObjectGridTable::GetValue (int row, int col)
         return wxString::Format("%d", option_value.value);
     }
     else if (grid_col->type == coFloat) {
+        if (auto option_value_ptr = dynamic_cast<ConfigOptionFloats*>(&option)) {
+            return wxString::Format("%.2f", option_value_ptr->values.front());
+        }
         ConfigOptionFloat& option_value = dynamic_cast<ConfigOptionFloat&>(option);
         return wxString::Format("%.2f", option_value.value);
     }
@@ -1990,8 +1993,8 @@ void ObjectGridTable::construct_object_configs(ObjectGrid *object_grid)
         object_grid->ori_enable_support = *(global_config.option<ConfigOptionBool>(m_col_data[col_enable_support]->key));
         object_grid->brim_type = *(get_object_config_value<ConfigOptionEnum<BrimType>>(global_config, object_grid->config, m_col_data[col_brim_type]->key));
         object_grid->ori_brim_type = *(global_config.option<ConfigOptionEnum<BrimType>>(m_col_data[col_brim_type]->key));
-        object_grid->speed_perimeter = *(get_object_config_value<ConfigOptionFloat>(global_config, object_grid->config, m_col_data[col_speed_perimeter]->key));
-        object_grid->ori_speed_perimeter = *(global_config.option<ConfigOptionFloat>(m_col_data[col_speed_perimeter]->key));
+        object_grid->speed_perimeter = get_object_speed_value(global_config, object_grid->config, m_col_data[col_speed_perimeter]->key);
+        object_grid->ori_speed_perimeter = get_global_speed_value(global_config, m_col_data[col_speed_perimeter]->key);
         m_grid_data.push_back(object_grid);
 
         int volume_count = object->volumes.size();
@@ -2049,7 +2052,7 @@ void ObjectGridTable::construct_object_configs(ObjectGrid *object_grid)
             volume_grid->ori_enable_support = object_grid->enable_support;
             volume_grid->brim_type = *(get_volume_config_value<ConfigOptionEnum<BrimType>>(global_config, object_grid->config, volume_grid->config, m_col_data[col_brim_type]->key));
             volume_grid->ori_brim_type = object_grid->brim_type;
-            volume_grid->speed_perimeter = *(get_volume_config_value<ConfigOptionFloat>(global_config, object_grid->config, volume_grid->config, m_col_data[col_speed_perimeter]->key));
+            volume_grid->speed_perimeter = get_volume_speed_value(global_config, object_grid->config, volume_grid->config, m_col_data[col_speed_perimeter]->key);
             volume_grid->ori_speed_perimeter = object_grid->speed_perimeter;
             m_grid_data.push_back(volume_grid);
         }
@@ -2095,8 +2098,8 @@ void ObjectGridTable::reload_object_data(ObjectGridRow* grid_row, const std::str
         grid_row->ori_enable_support = *(global_config.option<ConfigOptionBool>(m_col_data[col_enable_support]->key));
         grid_row->brim_type = *(get_object_config_value<ConfigOptionEnum<BrimType>>(global_config, grid_row->config, m_col_data[col_brim_type]->key));
         grid_row->ori_brim_type = *(global_config.option<ConfigOptionEnum<BrimType>>(m_col_data[col_brim_type]->key));
-        grid_row->speed_perimeter = *(get_object_config_value<ConfigOptionFloat>(global_config, grid_row->config, m_col_data[col_speed_perimeter]->key));
-        grid_row->ori_speed_perimeter = *(global_config.option<ConfigOptionFloat>(m_col_data[col_speed_perimeter]->key));
+        grid_row->speed_perimeter = get_object_speed_value(global_config, grid_row->config, m_col_data[col_speed_perimeter]->key);
+        grid_row->ori_speed_perimeter = get_global_speed_value(global_config, m_col_data[col_speed_perimeter]->key);
     }
     else if (category == L("Quality")) {
         grid_row->layer_height = *(get_object_config_value<ConfigOptionFloat>(global_config, grid_row->config, m_col_data[col_layer_height]->key));
@@ -2117,8 +2120,8 @@ void ObjectGridTable::reload_object_data(ObjectGridRow* grid_row, const std::str
         grid_row->ori_brim_type = *(global_config.option<ConfigOptionEnum<BrimType>>(m_col_data[col_brim_type]->key));
     }
     else if (category == L("Speed")) {
-        grid_row->speed_perimeter = *(get_object_config_value<ConfigOptionFloat>(global_config, grid_row->config, m_col_data[col_speed_perimeter]->key));
-        grid_row->ori_speed_perimeter = *(global_config.option<ConfigOptionFloat>(m_col_data[col_speed_perimeter]->key));
+        grid_row->speed_perimeter = get_object_speed_value(global_config, grid_row->config, m_col_data[col_speed_perimeter]->key);
+        grid_row->ori_speed_perimeter = get_global_speed_value(global_config, m_col_data[col_speed_perimeter]->key);
     }
 }
 
@@ -2135,7 +2138,7 @@ void ObjectGridTable::reload_part_data(ObjectGridRow* volume_row, ObjectGridRow*
         volume_row->ori_enable_support = object_row->enable_support;
         volume_row->brim_type = *(get_volume_config_value<ConfigOptionEnum<BrimType>>(global_config, object_row->config, volume_row->config, m_col_data[col_brim_type]->key));
         volume_row->ori_brim_type = object_row->brim_type;
-        volume_row->speed_perimeter = *(get_volume_config_value<ConfigOptionFloat>(global_config, object_row->config, volume_row->config, m_col_data[col_speed_perimeter]->key));
+        volume_row->speed_perimeter = get_volume_speed_value(global_config, object_row->config, volume_row->config, m_col_data[col_speed_perimeter]->key);
         volume_row->ori_speed_perimeter = object_row->speed_perimeter;
     }
     else if (category == L("Quality")) {
@@ -2172,7 +2175,7 @@ void ObjectGridTable::reload_part_data(ObjectGridRow* volume_row, ObjectGridRow*
         volume_row->ori_brim_type = object_row->brim_type;
     }
     else if (category == L("Speed")) {
-        volume_row->speed_perimeter = *(get_volume_config_value<ConfigOptionFloat>(global_config, object_row->config, volume_row->config, m_col_data[col_speed_perimeter]->key));
+        volume_row->speed_perimeter = get_volume_speed_value(global_config, object_row->config, volume_row->config, m_col_data[col_speed_perimeter]->key);
         if (volume_row->speed_perimeter == object_row->speed_perimeter) {
             volume_row->config->erase(m_col_data[col_speed_perimeter]->key);
         }
@@ -2828,50 +2831,48 @@ int ObjectTablePanel::init_bitmap()
 
 int ObjectTablePanel::init_filaments_and_colors()
 {
-    //DynamicPrintConfig&  global_config   = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-    const DynamicPrintConfig* global_config = m_plater->config();
     const std::vector<std::string> filament_presets = wxGetApp().preset_bundle->filament_presets;
-    m_filaments_count = filament_presets.size();
+    const std::vector<std::string> filament_colors = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+    m_filaments_count = filament_colors.size();
     if (m_filaments_count <= 0) {
         BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(", can not get filaments, count: %1%, set to default") %m_filaments_count;
         set_default_filaments_and_colors();
         return -1;
     }
 
-    const ConfigOptionStrings* filament_opt = dynamic_cast<const ConfigOptionStrings*>(global_config->option("filament_colour"));
-    if (filament_opt == nullptr) {
-        set_default_filaments_and_colors();
-        return -1;
-    }
     m_filaments_colors.resize(m_filaments_count);
     m_filaments_name.resize(m_filaments_count);
-    unsigned int color_count = filament_opt->values.size();
-    if (color_count != m_filaments_count) {
-        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", invalid color count:%1%, extruder count: %2%") %color_count %m_filaments_count;
-    }
-
-    unsigned int i = 0;
+    const size_t physical_count = filament_presets.size();
     ColorRGB rgb;
-    while (i < m_filaments_count) {
-        const std::string& txt_color = global_config->opt_string("filament_colour", i);
-        if (i < color_count) {
-            if (decode_color(txt_color, rgb))
-            {
-                m_filaments_colors[i] = wxColour(rgb.r_uchar(), rgb.g_uchar(), rgb.b_uchar());
-            }
-            else
-            {
-                m_filaments_colors[i] = *wxGREEN;
-            }
-        }
-        else {
+
+    for (int i = 0; i < m_filaments_count; ++i) {
+        if (size_t(i) < filament_colors.size() && decode_color(filament_colors[size_t(i)], rgb))
+            m_filaments_colors[i] = wxColour(rgb.r_uchar(), rgb.g_uchar(), rgb.b_uchar());
+        else
             m_filaments_colors[i] = *wxGREEN;
+
+        if (size_t(i) < physical_count) {
+            m_filaments_name[i] = wxString(std::to_string(i + 1) + ": " + filament_presets[size_t(i)]);
+            continue;
         }
 
-        //parse the filaments
-        m_filaments_name[i] = wxString(std::to_string(i+1) + ": " + filament_presets[i]);
+        size_t mixed_offset = 0;
+        for (const MixedFilament &mf : wxGetApp().preset_bundle->mixed_filaments.mixed_filaments()) {
+            if (!mf.enabled || mf.deleted)
+                continue;
+            if (size_t(i) != physical_count + mixed_offset) {
+                ++mixed_offset;
+                continue;
+            }
 
-        i++;
+            m_filaments_name[i] = wxString::Format("%d: Mixed Filament %d (F%u + F%u)",
+                                                   i + 1, i + 1,
+                                                   unsigned(mf.component_a), unsigned(mf.component_b));
+            break;
+        }
+
+        if (m_filaments_name[i].empty())
+            m_filaments_name[i] = wxString::Format("%d: Filament %d", i + 1, i + 1);
     }
 
     return 0;

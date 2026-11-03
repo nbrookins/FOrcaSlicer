@@ -1,7 +1,10 @@
 #ifndef slic3r_Plater_hpp_
 #define slic3r_Plater_hpp_
 
+#include <limits>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 #include <boost/filesystem/path.hpp>
 
@@ -10,6 +13,7 @@
 #include <wx/notebook.h>
 
 #include "Selection.hpp"
+#include "MixedColorMatchHelpers.hpp"
 
 #include "libslic3r/enum_bitmask.hpp"
 #include "libslic3r/Preset.hpp"
@@ -71,6 +75,7 @@ class ObjectSettings;
 class ObjectLayers;
 class ObjectList;
 class GLCanvas3D;
+class GLTexture;
 class Mouse3DController;
 class NotificationManager;
 class DailyTipsWindow;
@@ -101,6 +106,7 @@ wxDECLARE_EVENT(EVT_GLCANVAS_COLOR_MODE_CHANGED,   SimpleEvent);
 wxDECLARE_EVENT(EVT_PRINT_FROM_SDCARD_VIEW,   SimpleEvent);
 wxDECLARE_EVENT(EVT_CREATE_FILAMENT, SimpleEvent);
 wxDECLARE_EVENT(EVT_MODIFY_FILAMENT, SimpleEvent);
+wxDECLARE_EVENT(EVT_FILAMENT_USAGE_CHANGED, SimpleEvent);
 wxDECLARE_EVENT(EVT_ADD_FILAMENT, SimpleEvent);
 wxDECLARE_EVENT(EVT_DEL_FILAMENT, SimpleEvent);
 using ColorEvent = Event<wxColour>;
@@ -150,12 +156,27 @@ public:
     // BBS. Add on_filaments_change() method.
     void on_filaments_change(size_t num_filaments);
     void change_filament(size_t from_id, size_t to_id);
+    void merge_mixed_filament(size_t from_id, size_t to_id,
+                              bool skip_update = false, bool skip_serialize = false);
     void add_filament();
-    void delete_filament(size_t filament_id  = size_t(-1), int replace_filament_id = -1); // 0 base, -1 means default
+    void delete_filament(size_t filament_id  = size_t(-1), int replace_filament_id = -1,
+                         bool skip_dependency_check = false,
+                         bool skip_update = false); // 0 base, -1 means default
+    // on_progress (optional) is invoked once per physical-filament deletion inside the
+    // batch loop, passing (current, total) where total = redundant physical count.
+    // Callers that show a progress dialog map (current/total) to a percentage and
+    // call progress.Update so the bar reflects real progress during the (potentially
+    // many-second) deletion loop. Default-empty: existing callers see no change.
+    void cleanup_unused_filaments_after_batch_match(const BatchMatchResult& match_result,
+                                                    std::function<void(int /*current*/, int /*total*/)> on_progress = nullptr);
     void add_custom_filament(wxColour new_col);
     void edit_filament();
 
     void on_filaments_delete(size_t filament_id);
+    void init_color_mix_panel(wxWindow* parent, wxSizer* sizer);
+    void update_color_mix_panel();
+    void update_mixed_filament_panel(bool sync_manager = true);
+    std::vector<unsigned int> get_ui_ordered_filament_ids() const;
     // BBS
     void on_bed_type_change(BedType bed_type);
     void load_ams_list(std::string const & device, MachineObject* obj);
@@ -163,6 +184,7 @@ public:
     void sync_ams_list();
     // Snapmaker U1: apply per-head filaments reported by the printer. Returns false when no printer data.
     bool sync_machine_filaments();
+    void show_sync_filament_dialog();
     // Orca
     void show_SEMM_buttons(bool bshow);
     void update_dynamic_filament_list();
@@ -210,6 +232,14 @@ public:
     const std::vector<std::string>& get_bed_type_combo_enum_values() const { return m_bed_type_combo_enum_values; }
 
 private:
+    void continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type);
+
+    // Applies a nozzle sync query result on the UI thread (async sync-button path).
+    void apply_nozzle_sync_result(bool got_machine_info, std::string machine_type,
+                                  std::vector<std::string> nozzle_diameters,
+                                  std::vector<std::string> nozzle_volume_types,
+                                  std::string device_name);
+
     struct priv;
     std::unique_ptr<priv> p;
 
@@ -225,6 +255,56 @@ class Plater: public wxPanel
 {
 public:
     using fs_path = boost::filesystem::path;
+    enum class FilamentTempMixingState
+    {
+        Compatible,
+        AllowedWarning,
+        BlockedError
+    };
+
+    // Per-plate breakdown of used filaments that participate in a high/low
+    // temperature mixing conflict. Slot numbers are 1-based to match what the
+    // user sees in the UI. Vectors are sorted ascending and de-duplicated.
+    struct FilamentTempMixingDetail {
+        std::vector<int> high_temp_slots_1based;
+        std::vector<int> low_temp_slots_1based;
+    };
+
+    // One plate's mixing detail, paired with its 1-based plate number.
+    // Used to build the Slice All notification body.
+    struct PlateMixingInfo {
+        int                     plate_index_1based;
+        FilamentTempMixingDetail detail;
+    };
+
+    // Per-plate breakdown of filaments whose flow ratio is 0 and would produce
+    // zero extrusion. Slot numbers are 1-based to match the UI display.
+    struct FlowRatioZeroDetail {
+        std::vector<int> offender_slots_1based;
+    };
+
+    /// \brief Cold plate (CSP) per-plate compatibility state.
+    enum class ColdPlateCompatState
+    {
+        /// \brief All used filaments compatible and no TPU in use.
+        Compatible,
+        /// \brief All used filaments compatible but TPU in use; non-blocking warning.
+        SeriousWarning,
+        /// \brief At least one used filament has zero cold-plate bed temperature; blocks slicing.
+        BlockedError
+    };
+
+    /// \brief Aggregate per-plate cold-plate compatibility result, computed in one pass.
+    /// \details Combines state with the data that produced it (unsupported filament slots,
+    ///          TPU slots) so callers can render notifications without re-querying.
+    ///          Slot lists are 1-based to match filament_display_label / FlowRatioZeroDetail.
+    struct ColdPlateCompatResult
+    {
+        ColdPlateCompatState   state = ColdPlateCompatState::Compatible;
+        std::vector<int>       unsupported_slots_1_based{};
+        std::vector<int>       tpu_slots_1_based{};
+        bool                   uses_tpu = false;
+    };
 
     Plater(wxWindow *parent, MainFrame *main_frame);
     Plater(Plater &&) = delete;
@@ -276,6 +356,8 @@ public:
     void load_gcode();
     void load_gcode(const wxString& filename);
     void reload_gcode_from_disk();
+    // rebuild the gcode preview with the current pipeline preference
+    void reload_gcode_preview();
     void refresh_print();
 
     void update_nozzle_settings(bool switch_machine = false);
@@ -447,7 +529,7 @@ public:
     void reload_all_from_disk();
     bool has_toolpaths_to_export() const;
     void export_toolpaths_to_obj() const;
-    void reslice();
+    bool reslice();
     void record_slice_preset(std::string action);
     void reslice_SLA_supports(const ModelObject &object, bool postpone_error_messages = false);
     void reslice_SLA_hollowing(const ModelObject &object, bool postpone_error_messages = false);
@@ -498,17 +580,108 @@ public:
     bool leave_gizmos_stack();
 
     void on_filaments_change(size_t extruders_count);
-    void on_filaments_delete(size_t extruders_count, size_t filament_id, int replace_filament_id = -1);
+    void on_filaments_delete(size_t extruders_count, size_t filament_id, int replace_filament_id = -1, const std::vector<unsigned char>& is_mixed_snapshot = {});
+    bool confirm_auto_generated_gradients(size_t num_physical);
+    void set_auto_generated_gradient_decision(size_t num_physical, bool create_auto_gradients);
     // BBS
     void on_bed_type_change(BedType bed_type);
     bool update_filament_colors_in_full_config();
-    void config_change_notification(const DynamicPrintConfig &config, const std::string& key);
     void on_config_change(const DynamicPrintConfig &config);
+    /// @brief Check whether high-temperature and low-temperature filaments are mixed on the current plate.
+    /// @return True if compatible; false if high/low temperature materials are mixed.
+    bool check_filament_temp_mixing();
+    /// @brief Check whether high-temperature and low-temperature filaments are mixed on a specific plate.
+    /// @param plate_index Plate index to check.
+    /// @return True if compatible or plate index is invalid; false if high/low temperature materials are mixed.
+    bool check_filament_temp_mixing(int plate_index);
+    /// @brief Same as above, plus fills `detail` with the 1-based used slots on the plate grouped by
+    ///        high/low temperature. `detail` is only meaningful when this overload returns false
+    ///        (i.e. a mixing conflict exists). On compatible / invalid plates, `detail` is cleared.
+    bool check_filament_temp_mixing(int plate_index, FilamentTempMixingDetail& detail);
+    /// @brief Get high/low temperature material mixing state for the current plate.
+    /// @return Current plate material mixing state.
+    FilamentTempMixingState get_filament_temp_mixing_state();
+    /// @brief Get high/low temperature material mixing state for a specific plate.
+    /// @param plate_index Plate index to check.
+    /// @return Plate material mixing state.
+    FilamentTempMixingState get_filament_temp_mixing_state(int plate_index);
+    /// @brief Check whether a specific plate is blocked by high/low temperature material mixing.
+    /// @param plate_index Plate index to check.
+    /// @return True if slicing this plate is blocked; otherwise false.
+    bool is_plate_blocked_by_filament_temp_mixing(int plate_index);
+    /// @brief Cached variant for hot paths (per-frame plate-thumbnail rendering).
+    ///        Refreshed once per sync_filament_temp_mixing_notification() call (which already
+    ///        runs at every state-changing event), so reads are O(1). Returns false for any
+    ///        index not yet populated by a sync (safe default — same as "not blocked").
+    /// @param plate_index Plate index to check.
+    /// @return True if the cached state for this plate is BlockedError; otherwise false.
+    bool is_plate_blocked_by_filament_temp_mixing_cached(int plate_index) const;
+    /// @brief Check whether slice-all has at least one plate that can be sliced.
+    /// @return True if any plate can be sliced and is not blocked by material mixing.
+    bool has_sliceable_plate_for_slice_all();
+    /// @brief Unified per-plate sliceability predicate.
+    /// @details Combines PartPlate::can_slice() with the GUI-layer blockers
+    ///          (filament temp mixing, cold-plate incompatibility, and future
+    ///          flow_ratio_zero) so plate-toolbar rendering, slice-all iteration,
+    ///          and MainFrame button gating cannot drift. Add new blockers as
+    ///          early-returns inside this function; do not branch on them at
+    ///          individual call sites. Mirrors has_sliceable_plate_for_slice_all's
+    ///          non-const contract (relies on is_plate_blocked_by_filament_temp_mixing,
+    ///          which is historical non-const).
+    /// @param[in] plate_index 0-based plate index.
+    /// @return true iff the plate exists, can_slice(), and is not blocked by any GUI-layer blocker.
+    bool is_plate_sliceable(int plate_index);
+    /// @brief Find the next plate that can be sliced by slice-all.
+    /// @param start_plate_index First plate index to check.
+    /// @return Plate index if found; otherwise -1.
+    int find_next_sliceable_plate_for_slice_all(int start_plate_index);
+    /// Sync notification state with current filament temp mixing status.
+    /// Returns true if slicing is allowed, false if high/low temperature mixing blocks slicing.
+    bool sync_filament_temp_mixing_notification();
+    /// @brief Same as above, plus fills `detail` with the 1-based slots of offending filaments.
+    ///        `detail` is only meaningful when this overload returns false. On valid plates, `detail` is cleared.
+    bool check_flow_ratio_zero(int plate_index, FlowRatioZeroDetail& detail);
+    /// @brief Check whether a specific plate is blocked because one of its used filaments has flow ratio == 0.
+    /// @param plate_index Plate index to check.
+    /// @return True if slicing this plate is blocked; otherwise false.
+    bool is_plate_blocked_by_flow_ratio_zero(int plate_index);
+    /// Sync notification state with current flow-ratio-zero status.
+    /// Returns true if slicing is allowed, false if any used filament has flow ratio == 0.
+    bool sync_flow_ratio_zero_notification();
+    /// @brief Compute the per-plate cold-plate compatibility state in a single pass.
+    /// @details Collects used filament slots once and walks them once, producing
+    ///          {state, unsupported filaments, TPU flag} in one traversal.
+    /// @param[in] plate_index 0-based plate index.
+    /// @return Result struct; state is Compatible when curr_bed_type != btCSP or plate is empty.
+    ColdPlateCompatResult get_cold_plate_compat_state(int plate_index) const;
+    /// @brief Returns true if the plate is blocked from slicing by cold-plate incompatibility.
+    /// @param[in] plate_index 0-based plate index.
+    bool is_plate_blocked_by_cold_plate(int plate_index) const;
+    /// @brief Sync (close + re-push) cold-plate notifications for the current plate.
+    /// @return True if slicing is allowed on current plate after sync.
+    bool sync_cold_plate_notification();
+    /// Check and guard filament temp mixing before slicing current plate.
+    bool guard_before_slice_plate();
+    /// Live (non-slice) warning: yellow notification when the CURRENT plate's
+    /// effective print sequence is by-object. Re-evaluated on global/per-plate
+    /// print-sequence edits, on plate switch, and on page switch (prepare
+    /// and preview both render it).
+    void sync_print_seq_warning_notification();
+    /// Check and guard filament temp mixing before slicing all plates.
+    bool guard_before_slice_all();
+    /// @brief Show confirmation dialog for allowed high/low temperature mixing before slice.
+    /// @return True if slicing can proceed; false if blocked or user cancelled.
+    bool confirm_filament_temp_mixing_before_slice();
+    /// @brief Confirm warning-level high/low temperature material mixing before slicing all plates.
+    /// @return True if slice-all can continue; otherwise false.
+    bool confirm_filament_temp_mixing_before_slice_all();
+    /// Queue a single UI sync after filament preset/assignment/plate usage changes.
+    void notify_filament_usage_changed();
     void force_filament_colors_update();
     void force_print_bed_update();
     // On activating the parent window.
     void on_activate();
-    std::vector<std::string> get_extruder_colors_from_plater_config(const GCodeProcessorResult* const result = nullptr) const;
+    std::vector<std::string> get_extruder_colors_from_plater_config(const GCodeProcessorResult* const result = nullptr, bool include_mixed = true) const;
     std::vector<std::string> get_colors_for_color_print(const GCodeProcessorResult* const result = nullptr) const;
 
     void update_menus();
@@ -522,6 +695,8 @@ public:
     wxString get_export_gcode_filename(const wxString& extension = wxEmptyString, bool only_filename = false, bool export_all = false) const;
     void set_project_filename(const wxString& filename);
     void update_print_error_info(int code, std::string msg, std::string extra);
+    void notify_vhl_dithering_conflict(bool local_z_enabled);
+    bool has_incompatible_mixed_filament_in_use() const;
 
     bool is_export_gcode_scheduled() const;
 
@@ -618,7 +793,7 @@ public:
     void enable_view_toolbar(bool enable);
 #endif
 
-    bool init_collapse_toolbar();
+    bool init_collapse_toolbar(const GLTexture* shared_background_texture = nullptr);
 
     const Camera& get_camera() const;
     Camera& get_camera();
@@ -673,6 +848,7 @@ public:
 #endif
 
     void reset_gcode_toolpaths();
+    void post_slice_state_change_update();
     void reset_last_loaded_gcode() { m_last_loaded_gcode = ""; }
 
     const Mouse3DController& get_mouse3d_controller() const;
@@ -694,7 +870,27 @@ public:
 
     bool need_update() const;
     void set_need_update(bool need_update);
+    // >0 while cleanup_unused_filaments_after_batch_match is looping physical
+    // deletions: suppresses per-deletion panel rebuild + painting remap (both
+    // run once after the loop). Single source of truth — Sidebar queries this
+    // instead of keeping its own flag.
+    int  batch_physical_deletion() const;
+    void inc_batch_physical_deletion();
+    void dec_batch_physical_deletion();
     void update_title_dirty_status();
+
+    // RAII guard for batch physical deletion: bumps batch_physical_deletion()
+    // on construction, decrements on destruction. Used by the batch-match
+    // cleanup loop to skip per-deletion rebuilds/remaps; exception-safe.
+    class BatchPhysicalDeletionGuard
+    {
+        Plater &m_plater;
+    public:
+        explicit BatchPhysicalDeletionGuard(Plater &p) : m_plater(p) { m_plater.inc_batch_physical_deletion(); }
+        ~BatchPhysicalDeletionGuard() { m_plater.dec_batch_physical_deletion(); }
+        BatchPhysicalDeletionGuard(const BatchPhysicalDeletionGuard &) = delete;
+        BatchPhysicalDeletionGuard &operator=(const BatchPhysicalDeletionGuard &) = delete;
+    };
 
     // ROII wrapper for suppressing the Undo / Redo snapshot to be taken.
 	class SuppressSnapshots
@@ -867,6 +1063,7 @@ private:
 };
 
 std::vector<int> get_min_flush_volumes(const DynamicPrintConfig& full_config);
+
 } // namespace GUI
 } // namespace Slic3r
 

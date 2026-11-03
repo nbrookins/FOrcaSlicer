@@ -71,8 +71,10 @@ public:
     // (this collection contains only ExtrusionEntityCollection objects)
     ExtrusionEntityCollection   fills;
 
+    unsigned int extruder(FlowRole role) const;
     Flow    flow(FlowRole role) const;
     Flow    flow(FlowRole role, double layer_height) const;
+    Flow    flow(FlowRole role, double layer_height, bool use_initial_layer_width) const;
     Flow    bridging_flow(FlowRole role, bool thick_bridge = false) const;
 
     void    slices_to_fill_surfaces_clipped();
@@ -155,6 +157,7 @@ public:
 
     // BBS
     ExPolygons              loverhangs;
+    std::vector<std::pair<ExPolygon, int>> loverhangs_with_type;
     BoundingBox             loverhangs_bbox;
 
     // BBS: color patch shell regions per extruder (0-based).

@@ -37,11 +37,9 @@ namespace GUI {
 WebViewPanel::WebViewPanel(wxWindow *parent)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
  {
-    wxString url = wxGetApp().flutter_web_url("1");
+    wxString url = wxGetApp().gateway_web_url("home_page");
     // wxString url = wxString::Format("file://%s/web/homepage/index.html?path=homepage.html", from_u8(resources_dir()));
     // wxString url     = wxString("http://127.0.0.1:") + wxString(std::to_string(PAGE_HTTP_PORT)) + wxString("/web/flutter_web/index.html?path=1");
-    url = wxGetApp().get_international_url(url);
-
     // test
     // url = "http://localhost:13619/web/flutter_web/1.html";
 
@@ -87,7 +85,7 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     m_info = new wxInfoBar(this);
     topsizer->Add(m_info, wxSizerFlags().Expand());
     // Create the webview
-    m_initial_url = url;
+    BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_requested] view=home url=" << url.ToUTF8().data();
     m_browser = WebView::CreateWebView(this, url);
 
     wxGetApp().fltviews().add_webview_panel(this, url);
@@ -96,7 +94,6 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
         wxLogError("Could not init m_browser");
         return;
     }
-    m_browser->Hide();
     SetSizer(topsizer);
 
     topsizer->Add(m_browser, wxSizerFlags().Expand().Proportion(1));
@@ -254,6 +251,7 @@ void WebViewPanel::reload() {
 
 void WebViewPanel::load_url(wxString& url)
 {
+    BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_requested] view=home url=" << url.ToUTF8().data();
 
     WebView::LoadUrl(m_browser, url);
 
@@ -429,9 +427,6 @@ void WebViewPanel::OnClose(wxCloseEvent& evt)
 
 void WebViewPanel::OnFreshLoginStatus(wxTimerEvent &event)
 {
-    /*auto mainframe = Slic3r::GUI::wxGetApp().mainframe;
-    if (mainframe && mainframe->m_webview == this)
-        Slic3r::GUI::wxGetApp().sm_get_login_info();*/
 }
 
 void WebViewPanel::SetLoginPanelVisibility(bool bshow)
@@ -563,11 +558,6 @@ void WebViewPanel::OnNavigationRequest(wxWebViewEvent& evt)
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << ": " << evt.GetTarget().ToUTF8().data();
     const wxString &url = evt.GetURL();
     if (url.StartsWith("File://") || url.StartsWith("file://")) {
-        // Bundled Flutter/Device UI (macOS file:// fallback), not drag-and-drop model paths.
-        if (url.Contains("flutter_web") || url.Contains("/web/homepage/index.html")) {
-            evt.Skip();
-            return;
-        }
         if (!url.Contains("/web/homepage/index.html")) {
             auto file = wxURL::Unescape(wxURL(url).GetPath());
 #ifdef _WIN32
@@ -609,8 +599,6 @@ void WebViewPanel::OnNavigationRequest(wxWebViewEvent& evt)
     */
 void WebViewPanel::OnNavigationComplete(wxWebViewEvent& evt)
 {
-    m_nav_error_retries = 0;
-    m_browser->Show();
     Layout();
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << ": " << evt.GetTarget().ToUTF8().data();
     if (wxGetApp().get_mode() == comDevelop)
@@ -628,6 +616,7 @@ void WebViewPanel::OnDocumentLoaded(wxWebViewEvent& evt)
     // Only notify if the document is the main frame, not a subframe
     if (evt.GetURL() == m_browser->GetCurrentURL())
     {
+        BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_loaded] view=home url=" << evt.GetURL().ToUTF8().data();
         if (wxGetApp().get_mode() == comDevelop)
             wxLogMessage("%s", "Document loaded; url='" + evt.GetURL() + "'");
     }
@@ -659,7 +648,7 @@ void WebViewPanel::OnNewWindow(wxWebViewEvent& evt)
     //If we handle new window events then just load them in this window as we
     //are a single window browser
     if (m_tools_handle_new_window->IsChecked())
-        WebView::LoadUrl(m_browser, evt.GetURL());
+        m_browser->LoadURL(evt.GetURL());
 
     UpdateState();
 }
@@ -910,21 +899,7 @@ void WebViewPanel::OnError(wxWebViewEvent& event)
     case wxWEBVIEW_NAV_ERR_OTHER: e = "wxWEBVIEW_NAV_ERR_OTHER"; break;
     }
     BOOST_LOG_TRIVIAL(fatal) << __FUNCTION__<< boost::format(":PrinterWebView error loading page %1% %2% %3% %4%") % event.GetURL() % event.GetTarget() %e % event.GetString();
-
-    if (event.GetInt() == wxWEBVIEW_NAV_ERR_USER_CANCELLED)
-        return;
-
-    constexpr int kMaxNavRetries = 3;
-    if (m_browser && m_nav_error_retries < kMaxNavRetries && !m_initial_url.empty()) {
-        ++m_nav_error_retries;
-        wxString retry_url = wxGetApp().get_international_url(m_initial_url);
-        wxGetApp().CallAfter([this, retry_url]() {
-            if (!m_browser)
-                return;
-            wxString url = retry_url;
-            load_url(url);
-        });
-    }
+    
 }
 
 

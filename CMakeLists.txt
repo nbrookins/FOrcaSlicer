@@ -57,6 +57,8 @@ endif ()
 project(Snapmaker_Orca)
 
 include("version.inc")
+# Upstream OrcaSlicer AppImage templates still reference SoftFever_VERSION.
+set(SoftFever_VERSION "${Snapmaker_VERSION}")
 include(GNUInstallDirs)
 include(CMakeDependentOption)
 
@@ -98,6 +100,10 @@ else()
         endif()
 endif()
 
+set(SNAP_LOG_HMAC_SECRET "c25hcG1ha2VyLU9yY2E" CACHE STRING
+    "Public SnapLog gateway signing key (not a user credential)")
+add_definitions("-DSNAP_LOG_HMAC_SECRET=\"${SNAP_LOG_HMAC_SECRET}\"")
+
 option(SLIC3R_STATIC 			"Compile Snapmaker_Orca with static libraries (Boost, TBB, glew)" ${SLIC3R_STATIC_INITIAL})
 option(SLIC3R_GUI    			"Compile Snapmaker_Orca with GUI components (OpenGL, wxWidgets)" 1)
 option(SLIC3R_FHS               "Assume Snapmaker_Orca is to be installed in a FHS directory structure" 0)
@@ -107,7 +113,14 @@ option(SLIC3R_PCH               "Use precompiled headers" 1)
 option(SLIC3R_MSVC_COMPILE_PARALLEL "Compile on Visual Studio in parallel" 1)
 option(SLIC3R_MSVC_PDB          "Generate PDB files on MSVC in Release mode" 1)
 option(SLIC3R_PERL_XS           "Compile XS Perl module and enable Perl unit and integration tests" 0)
-option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
+
+# ── Sanitizers (legacy compat) ──────────────────────────────────────────────
+# ENABLE_ASAN / ENABLE_UBSAN are declared in cmake/sanitizers.cmake.
+# SLIC3R_ASAN is the legacy name; forward with a deprecation warning.
+if(DEFINED SLIC3R_ASAN)
+    message(WARNING "SLIC3R_ASAN is deprecated — use ENABLE_ASAN instead")
+    set(ENABLE_ASAN ${SLIC3R_ASAN} CACHE BOOL "Enable AddressSanitizer (ASan)" FORCE)
+endif()
 
 # Sentry crash reporting - enabled only on Windows by default
 if (WIN32 OR APPLE)
@@ -239,6 +252,22 @@ foreach (DIR ${PREFIX_PATH_CHECK})
         message(WARNING "CMAKE_PREFIX_PATH element doesn't exist: ${DIR}")
     endif ()
 endforeach ()
+
+# When configuring from an IDE (without build_linux.sh), dependencies are often
+# already installed under deps/build/destdir/usr/local — pick them up automatically.
+# Flatpak passes -DFLATPAK=ON and copies the whole source tree; host destdir must not
+# be prepended or it can shadow /app and break find_package (e.g. Boost iostreams -> zstd).
+set(_ORCA_BUNDLED_DEPS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/deps/build/destdir/usr/local")
+if (EXISTS "${_ORCA_BUNDLED_DEPS_PREFIX}/include/openvdb/version.h" AND NOT FLATPAK)
+    list(FIND CMAKE_PREFIX_PATH "${_ORCA_BUNDLED_DEPS_PREFIX}" _orca_bundled_deps_idx)
+    if (_orca_bundled_deps_idx LESS 0)
+        set(CMAKE_PREFIX_PATH "${_ORCA_BUNDLED_DEPS_PREFIX};${CMAKE_PREFIX_PATH}" CACHE PATH
+            "Where to look for external packages (OpenVDB, OCCT, …); bundled deps prepended when present." FORCE)
+        message(STATUS "Prepended bundled deps install to CMAKE_PREFIX_PATH: ${_ORCA_BUNDLED_DEPS_PREFIX}")
+    endif ()
+endif ()
+unset(_ORCA_BUNDLED_DEPS_PREFIX)
+unset(_orca_bundled_deps_idx)
 
 # Add our own cmake module path.
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules/)
@@ -391,24 +420,11 @@ if (NOT MSVC AND ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMP
 
 endif()
 
-if (SLIC3R_ASAN)
-    # ASAN should be available on MSVC starting with Visual Studio 2019 16.9
-    # https://devblogs.microsoft.com/cppblog/address-sanitizer-for-msvc-now-generally-available/
-    add_compile_options(-fsanitize=address)
+# ── Sanitizers (ASan / UBSan) ──────────────────────────────────────────────
+include(cmake/sanitizers.cmake)
 
-    if (NOT MSVC)
-        add_compile_options(-fno-omit-frame-pointer)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
-        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -fsanitize=address")
-    else()
-        add_compile_definitions(_DISABLE_STRING_ANNOTATION=1 _DISABLE_VECTOR_ANNOTATION=1)
-    endif ()
-
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lasan")
-    endif ()
-endif ()
+# ── Code Coverage ───────────────────────────────────────────────────────────
+include(cmake/coverage.cmake)
 
 if (APPLE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
@@ -526,15 +542,13 @@ if(NOT SLIC3R_STATIC)
 endif()
 
 function(slic3r_remap_configs targets from_Cfg to_Cfg)
-    if(MSVC)
-        string(TOUPPER ${from_Cfg} from_CFG)
+    string(TOUPPER ${from_Cfg} from_CFG)
 
-        foreach(tgt ${targets})
-            if(TARGET ${tgt})
-                set_target_properties(${tgt} PROPERTIES MAP_IMPORTED_CONFIG_${from_CFG} ${to_Cfg})
-            endif()
-        endforeach()
-    endif()
+    foreach(tgt ${targets})
+        if(TARGET ${tgt})
+            set_target_properties(${tgt} PROPERTIES MAP_IMPORTED_CONFIG_${from_CFG} ${to_Cfg})
+        endif()
+    endforeach()
 endfunction()
 
 target_include_directories(boost_headeronly SYSTEM INTERFACE ${Boost_INCLUDE_DIRS})
@@ -649,11 +663,8 @@ include_directories(BEFORE SYSTEM ${EIGEN3_INCLUDE_DIR})
 find_package(EXPAT)
 
 if (NOT EXPAT_FOUND)
-    add_library(expat STATIC
-        ${LIBDIR}/expat/xmlparse.c
-        ${LIBDIR}/expat/xmlrole.c
-        ${LIBDIR}/expat/xmltok.c
-    )
+    # deps_src/expat provides the expat target with XML_LARGE_SIZE enabled.
+    # Just set the variables needed by consumers.
     set(EXPAT_FOUND 1)
     set(EXPAT_INCLUDE_DIRS ${LIBDIR}/expat/)
     set(EXPAT_LIBRARIES expat)
@@ -662,6 +673,10 @@ endif ()
 find_package(PNG REQUIRED)
 
 set(OpenGL_GL_PREFERENCE "LEGACY")
+if (APPLE)
+    # AGL was removed from the macOS 26 SDK. CMake 3.28 FindOpenGL still treats AGL as GLU.
+    set(OPENGL_glu_LIBRARY "" CACHE FILEPATH "Do not link AGL (removed in macOS 26 SDK)")
+endif ()
 find_package(OpenGL REQUIRED)
 
 set(GLEW_ROOT "${CMAKE_PREFIX_PATH}")
@@ -879,7 +894,15 @@ endfunction()
 
 
 # libslic3r, Snapmaker_Orca GUI and the Snapmaker_Orca executable.
-add_subdirectory(deps_src)
+# src/CMakeLists.txt calls project(); use this for paths to repo-root (e.g. deps/) from there.
+set(SNAPMAKER_ORCA_TOP_SOURCE_DIR "${CMAKE_SOURCE_DIR}" CACHE INTERNAL "Top of Snapmaker_Orca source tree")
+
+# GitLab CI can override with -DDEPS_SRC_DIR=gitlab_deps_src to use vendor-provided deps
+if(DEFINED DEPS_SRC_DIR)
+    add_subdirectory(${DEPS_SRC_DIR} deps_src)
+else()
+    add_subdirectory(deps_src)
+endif()
 add_subdirectory(src)
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT Snapmaker_Orca_app_gui)
 
@@ -900,6 +923,17 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+if(BUILD_TESTS)
+    if(NOT TARGET tests)
+        add_custom_target(tests)
+    endif()
+    foreach(_t IN ITEMS libnest2d_tests libslic3r_tests slic3rutils_tests fff_print_tests sla_print_tests)
+        if(TARGET ${_t})
+            add_dependencies(tests ${_t})
+        endif()
+    endforeach()
+endif()
+
 if (NOT WIN32 AND NOT APPLE)
     set(SLIC3R_APP_CMD "snapmaker-orca")
     configure_file(${LIBDIR}/dev-utils/platform/unix/build_appimage.sh.in ${CMAKE_CURRENT_BINARY_DIR}/build_appimage.sh USE_SOURCE_PERMISSIONS @ONLY)
@@ -908,7 +942,9 @@ endif()
 
 # Resources install target, configure fhs.hpp on UNIX
 if (WIN32)
-    install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "./resources")
+    install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "./resources"
+        PATTERN "*/gw_cache" EXCLUDE
+    )
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
     include(InstallRequiredSystemLibraries)
     install (PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ".")
@@ -917,6 +953,7 @@ elseif (SLIC3R_FHS)
     set(SLIC3R_FHS_RESOURCES "${CMAKE_INSTALL_FULL_DATAROOTDIR}/Snapmaker_Orca")
     install(DIRECTORY ${SLIC3R_RESOURCES_DIR}/ DESTINATION ${SLIC3R_FHS_RESOURCES}
         PATTERN "*/udev" EXCLUDE
+        PATTERN "snapmaker_control_linux_*" PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
     )
     install(FILES src/dev-utils/platform/unix/Snapmaker_Orca.desktop DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
     foreach(SIZE 32 128 192)
@@ -946,97 +983,270 @@ set (CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\Snapmaker_Orca.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
-set (CPACK_NSIS_INSTALLED_ICON_NAME "$INSTDIR\\\\snapmaker-orca.exe")
+set (CPACK_NSIS_INSTALLED_ICON_NAME "snapmaker-orca.exe")
 set(CPACK_NSIS_UNINSTALL_NAME "Uninstall")
-set(CPACK_NSIS_INSTALL_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerURLProtocols_install.nsh")
-set(CPACK_NSIS_UNINSTALL_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerURLProtocols_uninstall.nsh")
-# Preinstall guard in one place:
-# 1) Block while app is running.
-# 2) If old version exists, uninstall it with clear failure reason.
-# We keep this in EXTRA_PREINSTALL because CPack's default .onInit uninstall prompt runs before section logic.
-set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS [=[
-SnapmakerOrcaPre_check_loop:
-  ExecWait 'cmd.exe /c tasklist /FI "IMAGENAME eq snapmaker-orca.exe" 2>nul | find /i "snapmaker-orca.exe" >nul' $0
-  IntCmp $0 0 SnapmakerOrcaPre_in_use SnapmakerOrcaPre_try_legacy SnapmakerOrcaPre_try_legacy
-SnapmakerOrcaPre_try_legacy:
-  ExecWait 'cmd.exe /c tasklist /FI "IMAGENAME eq Snapmaker_Orca.exe" 2>nul | find /i "Snapmaker_Orca.exe" >nul' $0
-  IntCmp $0 0 SnapmakerOrcaPre_in_use SnapmakerOrcaPre_idle SnapmakerOrcaPre_idle
-SnapmakerOrcaPre_idle:
-  Goto SnapmakerOrcaPre_done
-SnapmakerOrcaPre_in_use:
-  IfSilent SnapmakerOrcaPre_silent SnapmakerOrcaPre_prompt
-SnapmakerOrcaPre_silent:
-  SetErrorLevel 7
-  Quit
-SnapmakerOrcaPre_prompt:
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Snapmaker Orca is still running.$\nClose the program, then click Retry to continue, or Cancel to exit the installer." IDRETRY SnapmakerOrcaPre_check_loop
-  Abort
-SnapmakerOrcaPre_done:
-  ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Snapmaker_Orca" "UninstallString"
-  StrCmp $0 "" SnapmakerOrcaPre_read_hkcu_uninst SnapmakerOrcaPre_has_uninst
-SnapmakerOrcaPre_read_hkcu_uninst:
-  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Snapmaker_Orca" "UninstallString"
-SnapmakerOrcaPre_has_uninst:
-  StrCmp $0 "" SnapmakerOrcaPre_finish
-
-  MessageBox MB_YESNOCANCEL|MB_ICONEXCLAMATION "Snapmaker_Orca is already installed.$\n$\nDo you want to uninstall the old version before installing the new one?" /SD IDYES IDYES SnapmakerOrcaPre_uninst IDNO SnapmakerOrcaPre_finish
-  Abort
-
-SnapmakerOrcaPre_uninst:
-  ClearErrors
-  StrCpy $2 $0 1 0
-  StrCmp $2 "$\"" SnapmakerOrcaPre_trim_first_quote SnapmakerOrcaPre_check_last_quote
-SnapmakerOrcaPre_trim_first_quote:
-  StrCpy $0 $0 "" 1
-SnapmakerOrcaPre_check_last_quote:
-  StrCpy $2 $0 1 -1
-  StrCmp $2 "$\"" SnapmakerOrcaPre_trim_last_quote SnapmakerOrcaPre_have_uninst_path
-SnapmakerOrcaPre_trim_last_quote:
-  StrCpy $0 $0 -1
-SnapmakerOrcaPre_have_uninst_path:
-
-  StrLen $2 "Uninstall.exe"
-  StrCpy $3 $0 -$2
-  ; $3 ends with "\" (e.g. ...\Snapmaker_Orca\). _?="...\" breaks Windows cmdline parsing
-  ; (\" escapes the closing quote), truncating _?= at the first space — strip trailing backslashes.
-SnapmakerOrcaPre_trim_inst_slash:
-  StrCpy $2 $3 1 -1
-  StrCmp $2 "\" SnapmakerOrcaPre_do_trim_slash SnapmakerOrcaPre_trim_slash_done
-SnapmakerOrcaPre_do_trim_slash:
-  StrCpy $3 $3 -1
-  Goto SnapmakerOrcaPre_trim_inst_slash
-SnapmakerOrcaPre_trim_slash_done:
-  IfFileExists "$0" 0 SnapmakerOrcaPre_uninst_launch_failed
-  ; Same as CMake CPack NSIS.template.in and NSIS maintainer guidance: use _?=$DIR with NO
-  ; extra quotes around the directory. _?="C:\Program Files\..." breaks parsing (log shows
-  ; _?="C:\Program Fil...) and causes uninstall failure. See NSIS forums t-212468.
-  ExecWait '"$0" /S _?=$3' $1
-  IfErrors SnapmakerOrcaPre_uninst_launch_failed 0
-  IntCmp $1 0 SnapmakerOrcaPre_finish SnapmakerOrcaPre_uninst_failed SnapmakerOrcaPre_uninst_failed
-
-SnapmakerOrcaPre_uninst_failed:
-  MessageBox MB_OK|MB_ICONSTOP "Uninstall failed.$\nUninstaller path: $0$\nWorking dir: $3$\nExit code: $1"
-  Abort
-
-SnapmakerOrcaPre_uninst_launch_failed:
-  MessageBox MB_OK|MB_ICONSTOP "Failed to start uninstaller process.$\nUninstaller path: $0$\nWorking dir: $3$\n$\nSystem error: the uninstall command could not be executed by Windows (IfErrors set).$\nPossible causes: missing/corrupted uninstaller, access denied, or invalid install directory."
-  Abort
-
-SnapmakerOrcaPre_finish:
+# Window caption. Keep install dir / Start Menu / registry without version.
+# CPack-generated .nsi stays ASCII. Chinese uninstall confirm is a UTF-8 BOM
+# .nsh included after "Unicode true" so language switch (SimpChinese/English) works.
+set (CPACK_NSIS_DISPLAY_NAME "${CPACK_PACKAGE_NAME}")
+set (CPACK_NSIS_PACKAGE_NAME "${CPACK_PACKAGE_NAME} V${Snapmaker_VERSION}")
+# Pre-fill the directory page with the existing install path on overwrite
+# (logic lives in cmake/nsis/SnapmakerDirPre.nsh, pulled in via MUI hook).
+file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerDirPre.nsh" _snapmaker_dirpre_nsh)
+set (CPACK_NSIS_DEFINES "!define MUI_STARTMENUPAGE_DEFAULTFOLDER \"${CPACK_PACKAGE_NAME}\"\n!include \"${_snapmaker_dirpre_nsh}\"")
+# Preinstall guard (block-while-running + old-version uninstall prompt) lives in
+# cmake/nsis/SnapmakerPreinstall.nsh.in and is included from the install section
+# via CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS. That variable is set in the WIN32
+# block below (where the UTF-8 BOM .nsh is written), because the CPack-generated
+# .nsi template must stay ASCII -- the Chinese/English prompt texts therefore
+# live in the separate UTF-8 BOM .nsh instead of this inline block.
+file(READ "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerURLProtocols_install.nsh" CPACK_NSIS_EXTRA_INSTALL_COMMANDS)
+file(READ "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerConnectFirewall_install.nsh" _snapmaker_connect_firewall_install)
+string(APPEND CPACK_NSIS_EXTRA_INSTALL_COMMANDS "\n${_snapmaker_connect_firewall_install}")
+file(READ "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerURLProtocols_uninstall.nsh" _snapmaker_nsis_uninst_url)
+set(_snapmaker_nsis_uninst_kill [=[
+  nsExec::Exec 'taskkill /F /T /IM snapmaker-orca.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM Snapmaker_Orca.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM snapmaker_control_windows_x64.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM snapmaker_control_windows_arm64.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM snapmaker_connection_windows_x64.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM snapmaker_connection_windows_arm64.exe'
+  Pop $0
 ]=])
-set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
-    CreateShortCut \\\"$DESKTOP\\\\Snapmaker Orca.lnk\\\" \\\"$INSTDIR\\\\snapmaker-orca.exe\\\"
-")
+string(CONCAT CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
+       "${_snapmaker_nsis_uninst_kill}" "${_snapmaker_nsis_uninst_url}")
+# Wait briefly for the connect CLI to release its executable after the forced
+# termination above before generated files are removed.
+file(READ "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerConnect_uninstall.nsh" _snapmaker_connect_uninstall)
+string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "\n${_snapmaker_connect_uninstall}")
+file(READ "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerConnectFirewall_uninstall.nsh" _snapmaker_connect_firewall_uninstall)
+string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "\n${_snapmaker_connect_firewall_uninstall}")
+# Auto-close the uninstall details page so the wizard advances to the custom
+# finish page as soon as the uninstall section finishes (no extra click).
+string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "  SetAutoClose true\n")
+# Desktop shortcut inside MUI_STARTMENU_WRITE_BEGIN: respects "do not create shortcuts" on the start menu page.
+set(CPACK_NSIS_CREATE_ICONS_EXTRA [=[
+  SetShellVarContext current
+  CreateShortCut "$DESKTOP\Snapmaker Orca.lnk" "$INSTDIR\snapmaker-orca.exe" "" "$INSTDIR\snapmaker-orca.exe" 0
+  SetShellVarContext all
+]=])
+set(CPACK_NSIS_DELETE_ICONS_EXTRA [=[
+  SetShellVarContext current
+  Delete "$DESKTOP\Snapmaker Orca.lnk"
+  SetShellVarContext all
+]=])
 set (CPACK_PACKAGE_CHECKSUM SHA256)
 set (CPACK_PACKAGE_INSTALL_REGISTRY_KEY "Snapmaker_Orca")
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL OFF)
 set (CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
-# set (CPACK_NSIS_MODIFY_PATH "ON")
 set(CPACK_PACKAGE_EXECUTABLES "snapmaker-orca;Snapmaker Orca")
-set(CPACK_CREATE_DESKTOP_LINKS "snapmaker-orca")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 
 set(CPACK_WIX_UPGRADE_GUID "058245e8-20e0-4a95-9ab7-1acfe17ad511")
 set(CPACK_GENERATOR NSIS)
 set(CPACK_VERBATIM_VARIABLES ON)
+# Strip CPack "Install Options" page; shortcuts follow the start-menu checkbox only.
+if (WIN32)
+    file(READ "${CMAKE_ROOT}/Modules/Internal/CPack/NSIS.template.in" _snapmaker_nsis_tpl)
+    string(REPLACE "\r\n" "\n" _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    string(REPLACE "\r" "\n" _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    set(_snapmaker_nsis_old_registry [=[
+  ;Read a value from an InstallOptions INI file
+  !insertmacro MUI_INSTALLOPTIONS_READ $DO_NOT_ADD_TO_PATH "NSIS.InstallOptions.ini" "Field 2" "State"
+  !insertmacro MUI_INSTALLOPTIONS_READ $ADD_TO_PATH_ALL_USERS "NSIS.InstallOptions.ini" "Field 3" "State"
+  !insertmacro MUI_INSTALLOPTIONS_READ $ADD_TO_PATH_CURRENT_USER "NSIS.InstallOptions.ini" "Field 4" "State"
+
+  ; Write special uninstall registry entries
+  Push "StartMenu"
+  Push "$STARTMENU_FOLDER"
+  Call ConditionalAddToRegistry
+  Push "DoNotAddToPath"
+  Push "$DO_NOT_ADD_TO_PATH"
+  Call ConditionalAddToRegistry
+  Push "AddToPathAllUsers"
+  Push "$ADD_TO_PATH_ALL_USERS"
+  Call ConditionalAddToRegistry
+  Push "AddToPathCurrentUser"
+  Push "$ADD_TO_PATH_CURRENT_USER"
+  Call ConditionalAddToRegistry
+  Push "InstallToDesktop"
+  Push "$INSTALL_DESKTOP"
+  Call ConditionalAddToRegistry
+
+]=])
+    set(_snapmaker_nsis_new_registry [=[
+  ; Write special uninstall registry entries
+  Push "StartMenu"
+  Push "$STARTMENU_FOLDER"
+  Call ConditionalAddToRegistry
+
+]=])
+    string(REPLACE "${_snapmaker_nsis_old_registry}" "${_snapmaker_nsis_new_registry}" _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    string(REPLACE
+        [=[;Include Modern UI
+
+  !include "MUI.nsh"]=]
+        [=[;Include Modern UI
+
+  Unicode true
+  !include "MUI.nsh"]=]
+        _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    foreach(_snapmaker_nsis_erase IN ITEMS
+        [=[  !insertmacro MUI_UNPAGE_CONFIRM
+]=]
+        [=[  Var DO_NOT_ADD_TO_PATH
+  Var ADD_TO_PATH_ALL_USERS
+  Var ADD_TO_PATH_CURRENT_USER
+  Var INSTALL_DESKTOP
+]=]
+        [=[  ReserveFile "NSIS.InstallOptions.ini"
+  !insertmacro MUI_RESERVEFILE_INSTALLOPTIONS
+
+]=]
+        [=[  Page custom InstallOptionsPage
+]=]
+        [=[  !insertmacro MUI_INSTALLOPTIONS_READ $INSTALL_DESKTOP "NSIS.InstallOptions.ini" "Field 5" "State"
+]=]
+        [=[Section "-Add to path"
+  Push $INSTDIR\bin
+  StrCmp "@CPACK_NSIS_MODIFY_PATH@" "ON" 0 doNotAddToPath
+  StrCmp $DO_NOT_ADD_TO_PATH "1" doNotAddToPath 0
+    Call AddToPath
+  doNotAddToPath:
+SectionEnd
+
+]=]
+        [=[;--------------------------------
+; Create custom pages
+Function InstallOptionsPage
+  !insertmacro MUI_HEADER_TEXT "Install Options" "Choose options for installing @CPACK_NSIS_PACKAGE_NAME@"
+  !insertmacro MUI_INSTALLOPTIONS_DISPLAY "NSIS.InstallOptions.ini"
+
+FunctionEnd
+
+]=]
+        [=[  ReadRegStr $DO_NOT_ADD_TO_PATH SHCTX \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@" "DoNotAddToPath"
+  ReadRegStr $ADD_TO_PATH_ALL_USERS SHCTX \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@" "AddToPathAllUsers"
+  ReadRegStr $ADD_TO_PATH_CURRENT_USER SHCTX \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@" "AddToPathCurrentUser"
+  ;MessageBox MB_OK "Add to path: $DO_NOT_ADD_TO_PATH all users: $ADD_TO_PATH_ALL_USERS"
+  ReadRegStr $INSTALL_DESKTOP SHCTX \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@" "InstallToDesktop"
+  ;MessageBox MB_OK "Install to desktop: $INSTALL_DESKTOP "
+
+]=]
+        [=[  Push $INSTDIR\bin
+  StrCmp $DO_NOT_ADD_TO_PATH_ "1" doNotRemoveFromPath 0
+    Call un.RemoveFromPath
+  doNotRemoveFromPath:
+]=]
+        [=[  StrCmp "@CPACK_NSIS_MODIFY_PATH@" "ON" 0 noOptionsPage
+    !insertmacro MUI_INSTALLOPTIONS_EXTRACT "NSIS.InstallOptions.ini"
+
+  noOptionsPage:
+]=]
+    )
+        string(REPLACE "${_snapmaker_nsis_erase}" "" _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    endforeach()
+    # CPack only deletes Software\<vendor>\<key>, not the parent <vendor> key, so
+    # an empty "Software\Snapmaker" key is left behind after uninstall. Delete it
+    # too (with /ifempty so it stays if other Snapmaker products also use it).
+    string(REPLACE
+        [=[  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"]=]
+        [=[  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"
+  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@"]=]
+        _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    string(REPLACE
+        [=[  ; Remove the registry entries.
+  DeleteRegKey SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"
+]=]
+        "" _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    string(REPLACE
+        [=[  StrCpy $MUI_TEMP "$START_MENU"
+  Delete "$SMPROGRAMS\$MUI_TEMP\Uninstall.lnk"
+@CPACK_NSIS_DELETE_ICONS_EXTRA@]=]
+        [=[  StrCpy $MUI_TEMP "$START_MENU"
+  StrCmp $MUI_TEMP "" secondStartMenuDeleteLoopDone
+  Delete "$SMPROGRAMS\$MUI_TEMP\Uninstall.lnk"
+@CPACK_NSIS_DELETE_ICONS@
+@CPACK_NSIS_DELETE_ICONS_EXTRA@]=]
+        _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    string(REPLACE
+        [=[  secondStartMenuDeleteLoopDone:
+
+  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"]=]
+        [=[  secondStartMenuDeleteLoopDone:
+
+  DeleteRegKey SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"
+  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"]=]
+        _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    set(_snapmaker_nsis_tpl_dir "${CMAKE_BINARY_DIR}/cmake/cpack")
+    file(MAKE_DIRECTORY "${_snapmaker_nsis_tpl_dir}")
+    set(_snapmaker_uninst_confirm_in "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerUninstallConfirm.nsh.in")
+    if(NOT EXISTS "${_snapmaker_uninst_confirm_in}")
+        message(FATAL_ERROR "Missing ${_snapmaker_uninst_confirm_in} (required for CPack NSIS uninstall confirm).")
+    endif()
+    file(READ "${_snapmaker_uninst_confirm_in}" _snapmaker_uninst_confirm ENCODING UTF-8)
+    string(REPLACE "@Snapmaker_VERSION@" "${Snapmaker_VERSION}"
+           _snapmaker_uninst_confirm "${_snapmaker_uninst_confirm}")
+    string(ASCII 239 187 191 _snapmaker_utf8_bom)
+    file(WRITE "${_snapmaker_nsis_tpl_dir}/SnapmakerUninstallConfirm.nsh"
+         "${_snapmaker_utf8_bom}${_snapmaker_uninst_confirm}")
+    file(TO_NATIVE_PATH "${_snapmaker_nsis_tpl_dir}/SnapmakerUninstallConfirm.nsh" _snapmaker_uninst_confirm_nsh)
+    string(PREPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
+           "  !include \"${_snapmaker_uninst_confirm_nsh}\"\n")
+    # Welcome-style uninstall finish page, included at top level of the patched
+    # template so Function/Var live outside Section "Uninstall".
+    set(_snapmaker_uninst_finish_in "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerUninstallFinish.nsh.in")
+    if(NOT EXISTS "${_snapmaker_uninst_finish_in}")
+        message(FATAL_ERROR "Missing ${_snapmaker_uninst_finish_in} (required for CPack NSIS uninstall finish page).")
+    endif()
+    file(READ "${_snapmaker_uninst_finish_in}" _snapmaker_uninst_finish ENCODING UTF-8)
+    string(REPLACE "@Snapmaker_VERSION@" "${Snapmaker_VERSION}"
+           _snapmaker_uninst_finish "${_snapmaker_uninst_finish}")
+    file(WRITE "${_snapmaker_nsis_tpl_dir}/SnapmakerUninstallFinish.nsh"
+         "${_snapmaker_utf8_bom}${_snapmaker_uninst_finish}")
+    file(TO_NATIVE_PATH "${_snapmaker_nsis_tpl_dir}/SnapmakerUninstallFinish.nsh" _snapmaker_uninst_finish_nsh)
+    # Upgrade cleanup: remove version-specific user data (system/ota) before the
+    # new files are installed. Included at top level (Function/Var) and invoked
+    # from CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS when an existing install is found.
+    set(_snapmaker_upgrade_cleanup_in "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerUpgradeCleanup.nsh.in")
+    if(NOT EXISTS "${_snapmaker_upgrade_cleanup_in}")
+        message(FATAL_ERROR "Missing ${_snapmaker_upgrade_cleanup_in} (required for CPack NSIS upgrade cleanup).")
+    endif()
+    file(READ "${_snapmaker_upgrade_cleanup_in}" _snapmaker_upgrade_cleanup ENCODING UTF-8)
+    file(WRITE "${_snapmaker_nsis_tpl_dir}/SnapmakerUpgradeCleanup.nsh"
+         "${_snapmaker_utf8_bom}${_snapmaker_upgrade_cleanup}")
+    file(TO_NATIVE_PATH "${_snapmaker_nsis_tpl_dir}/SnapmakerUpgradeCleanup.nsh" _snapmaker_upgrade_cleanup_nsh)
+    # Preinstall prompts (block-while-running + old-version uninstall confirm)
+    # moved out of the inline ASCII template so the Chinese/English texts can
+    # live in a UTF-8 BOM .nsh. Included from the install section via
+    # CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS.
+    set(_snapmaker_preinstall_in "${CMAKE_SOURCE_DIR}/cmake/nsis/SnapmakerPreinstall.nsh.in")
+    if(NOT EXISTS "${_snapmaker_preinstall_in}")
+        message(FATAL_ERROR "Missing ${_snapmaker_preinstall_in} (required for CPack NSIS preinstall prompts).")
+    endif()
+    file(READ "${_snapmaker_preinstall_in}" _snapmaker_preinstall ENCODING UTF-8)
+    file(WRITE "${_snapmaker_nsis_tpl_dir}/SnapmakerPreinstall.nsh"
+         "${_snapmaker_utf8_bom}${_snapmaker_preinstall}")
+    file(TO_NATIVE_PATH "${_snapmaker_nsis_tpl_dir}/SnapmakerPreinstall.nsh" _snapmaker_preinstall_nsh)
+    set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "  !include \"${_snapmaker_preinstall_nsh}\"\n")
+    # Register the finish page AFTER MUI_UNPAGE_INSTFILES: shown automatically
+    # once file deletion in Section "Uninstall" has finished.
+    # BrandingText " " hides the default "Nullsoft Install System vX.XX" label
+    # in the bottom-left corner (empty string would reset to the default).
+    string(REPLACE
+        "  !insertmacro MUI_UNPAGE_INSTFILES\n"
+        "  !insertmacro MUI_UNPAGE_INSTFILES\n  !include \"${_snapmaker_upgrade_cleanup_nsh}\"\n  !include \"${_snapmaker_uninst_finish_nsh}\"\n  UninstPage custom un.SnapmakerUninstallFinishCreate un.SnapmakerUninstallFinishLeave\n  BrandingText \" \"\n"
+        _snapmaker_nsis_tpl "${_snapmaker_nsis_tpl}")
+    file(WRITE "${_snapmaker_nsis_tpl_dir}/NSIS.template.in" "${_snapmaker_nsis_tpl}")
+    list(PREPEND CMAKE_MODULE_PATH "${_snapmaker_nsis_tpl_dir}")
+endif ()
 include(CPack)

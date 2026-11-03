@@ -78,8 +78,6 @@ boost::filesystem::path	into_path(const wxString &str);
 
 // Display an About dialog
 extern void about();
-// Display a Login dialog
-extern void login();
 // Ask the destop to open the datadir using the default file explorer.
 extern void desktop_open_datadir_folder();
 // Ask the destop to open one folder
@@ -87,6 +85,9 @@ extern void desktop_open_any_folder(const std::string& path);
 
 //open dir and select the file to show
 extern void desktop_open_any_folderEx(const std::string& path);
+
+// Open the folder itself (enter it, no file selection)
+extern void desktop_open_folder(const std::string& path);
 } // namespace GUI
 } // namespace Slic3r
 

@@ -113,6 +113,8 @@ class ParamsPanel : public wxPanel
         wxWindow* m_import_from_file { nullptr };
         //wxStaticLine* m_staticline_middle{ nullptr };
         //wxBoxSizer* m_right_sizer { nullptr };
+        wxPanel* m_page_header { nullptr };
+        wxBoxSizer* m_page_header_sizer { nullptr };
         wxScrolledWindow* m_page_view { nullptr };
         wxBoxSizer* m_page_sizer { nullptr };
 
@@ -175,6 +177,9 @@ class ParamsPanel : public wxPanel
         wxPanel* filament_panel() { return m_tab_filament; }
 
         wxScrolledWindow* get_paged_view() { return m_page_view;}
+        wxWindow* get_page_header() { return m_page_header; }
+        wxSizer* get_page_header_sizer() { return m_page_header_sizer; }
+        void show_page_header(bool show);
         wxPanel*    get_current_tab() { return m_current_tab; }
 
 };

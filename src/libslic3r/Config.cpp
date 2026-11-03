@@ -440,6 +440,26 @@ std::ostream& ConfigDef::print_cli_help(std::ostream& out, bool show_defaults, s
     return out;
 }
 
+namespace {
+
+bool parse_indexed_option_key(const std::string &key, std::string &base_key, size_t &index)
+{
+    const size_t hash = key.rfind('#');
+    if (hash == std::string::npos || hash == 0 || hash + 1 == key.size())
+        return false;
+    size_t parsed = 0;
+    for (size_t i = hash + 1; i < key.size(); ++i) {
+        if (key[i] < '0' || key[i] > '9')
+            return false;
+        parsed = parsed * 10 + size_t(key[i] - '0');
+    }
+    base_key = key.substr(0, hash);
+    index = parsed;
+    return true;
+}
+
+} // namespace
+
 void ConfigBase::apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent)
 {
     // loop through options and apply them
@@ -449,17 +469,31 @@ void ConfigBase::apply_only(const ConfigBase &other, const t_config_option_keys 
         // an exception is thrown if not ignore_nonexistent.
         ConfigOption *my_opt = this->option(opt_key, true);
         if (my_opt == nullptr) {
+            std::string base_key;
+            size_t index = 0;
+            if (parse_indexed_option_key(opt_key, base_key, index)) {
+                auto *my_vector = dynamic_cast<ConfigOptionVectorBase *>(this->option(base_key, true));
+                const auto *other_vector = dynamic_cast<const ConfigOptionVectorBase *>(other.option(base_key));
+                if (my_vector != nullptr && other_vector != nullptr && index < other_vector->size()) {
+                    if (my_vector->empty())
+                        my_vector->resize(index + 1, other_vector);
+                    else if (index >= my_vector->size())
+                        my_vector->resize(index + 1);
+                    my_vector->set_at(other_vector, index, index);
+                    continue;
+                }
+            }
             // opt_key does not exist in this ConfigBase and it cannot be created, because it is not defined by this->def().
             // This is only possible if other is of DynamicConfig type.
             if (ignore_nonexistent)
                 continue;
             throw UnknownOptionException(opt_key);
         }
-		const ConfigOption *other_opt = other.option(opt_key);
-		if (other_opt == nullptr) {
+        const ConfigOption *other_opt = other.option(opt_key);
+        if (other_opt == nullptr) {
             // The key was not found in the source config, therefore it will not be initialized!
 //			printf("Not found, therefore not initialized: %s\n", opt_key.c_str());
-		} else
+        } else
             my_opt->set(other_opt);
     }
 }
@@ -473,8 +507,12 @@ bool ConfigBase::equals(const ConfigBase &other, const std::set<std::string>* sk
             continue;
         const ConfigOption *this_opt  = this->option(opt_key);
         const ConfigOption *other_opt = other.option(opt_key);
-        if (this_opt != nullptr && other_opt != nullptr && *this_opt != *other_opt)
-            return false;
+        if (this_opt != nullptr && other_opt != nullptr) {
+            if (this_opt->type() != other_opt->type())
+                return false;
+            if (*this_opt != *other_opt)
+                return false;
+        }
     }
     return true;
 }
@@ -486,8 +524,10 @@ t_config_option_keys ConfigBase::diff(const ConfigBase &other) const
     for (const t_config_option_key &opt_key : this->keys()) {
         const ConfigOption *this_opt  = this->option(opt_key);
         const ConfigOption *other_opt = other.option(opt_key);
-        if (this_opt != nullptr && other_opt != nullptr && *this_opt != *other_opt)
-            diff.emplace_back(opt_key);
+        if (this_opt != nullptr && other_opt != nullptr) {
+            if (this_opt->type() != other_opt->type() || *this_opt != *other_opt)
+                diff.emplace_back(opt_key);
+        }
     }
     return diff;
 }
@@ -499,7 +539,8 @@ t_config_option_keys ConfigBase::equal(const ConfigBase &other) const
     for (const t_config_option_key &opt_key : this->keys()) {
         const ConfigOption *this_opt  = this->option(opt_key);
         const ConfigOption *other_opt = other.option(opt_key);
-        if (this_opt != nullptr && other_opt != nullptr && *this_opt == *other_opt)
+        if (this_opt != nullptr && other_opt != nullptr &&
+            this_opt->type() == other_opt->type() && *this_opt == *other_opt)
             equal.emplace_back(opt_key);
     }
     return equal;
@@ -669,6 +710,12 @@ double ConfigBase::get_abs_value(const t_config_option_key &opt_key) const
       return static_cast<const ConfigOptionInt *>(raw_opt)->value;
     if (raw_opt->type() == coBool)
       return static_cast<const ConfigOptionBool *>(raw_opt)->value ? 1 : 0;
+    // Snapmaker: flow-variant
+    if (raw_opt->type() == coFloats) {
+        const auto *floats = static_cast<const ConfigOptionFloats*>(raw_opt);
+        if (!floats->values.empty())
+            return floats->values.front();
+    }
 
     const ConfigOptionPercent *cast_opt = nullptr;
     if (raw_opt->type() == coFloatOrPercent) {
@@ -897,8 +944,35 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
                     if (optdef && optdef->type == coStrings) {
                         use_comma = false;
                     }
+                    std::vector<std::string> array_values;
+                    array_values.reserve(it.value().size());
                     for (auto iter = it.value().begin(); iter != it.value().end(); iter++) {
                         if (iter.value().is_string()) {
+                            array_values.emplace_back(iter.value());
+                        }
+                        else {
+                            //should not happen
+                            BOOST_LOG_TRIVIAL(error) << __FUNCTION__<< ": parse "<<file<<" error, invalid json array for " << it.key();
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if (valid && optdef != nullptr && optdef->is_scalar() && optdef->type != coPoint && optdef->type != coPoint3) {
+                        if (array_values.size() == 1) {
+                            value_str = array_values.front();
+                        } else if (!array_values.empty()) {
+                            const std::string& first_value = array_values.front();
+                            bool all_values_equal = std::all_of(array_values.begin() + 1, array_values.end(),
+                                                                [&first_value](const std::string& value) { return value == first_value; });
+                            if (all_values_equal) {
+                                value_str = first_value;
+                                BOOST_LOG_TRIVIAL(warning)
+                                    << __FUNCTION__ << ": collapsing redundant json array for scalar option " << it.key() << " in " << file;
+                            }
+                        }
+                    }
+                    if (valid && value_str.empty()) {
+                        for (const std::string &array_value : array_values) {
                             if (!first) {
                                 if (use_comma)
                                     value_str += ",";
@@ -909,18 +983,12 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
                                 first = false;
 
                             if (use_comma)
-                                value_str += iter.value();
+                                value_str += array_value;
                             else {
                                 value_str += "\"";
-                                value_str += escape_string_cstyle(iter.value());
+                                value_str += escape_string_cstyle(array_value);
                                 value_str += "\"";
                             }
-                        }
-                        else {
-                            //should not happen
-                            BOOST_LOG_TRIVIAL(error) << __FUNCTION__<< ": parse "<<file<<" error, invalid json array for " << it.key();
-                            valid = false;
-                            break;
                         }
                     }
                     if (valid)
@@ -1282,10 +1350,13 @@ ConfigSubstitutions ConfigBase::load_from_gcode_file(const std::string &file, Fo
     bool has_delimiters = true;
     {
         //BBS
-        std::string bambuslicer_gcode_header = "; Snapmaker_Orca";
-
-        std::string Snapmaker_Orca_gcode_header = std::string("; generated by ");
-        Snapmaker_Orca_gcode_header += SLIC3R_APP_NAME;
+        std::string bambuslicer_gcode_header      = "; Snapmaker_Orca";
+        std::string legacy_fs_gcode_header        = std::string("; generated by ") + SLIC3R_APP_NAME;
+        std::string compat_snapmaker_gcode_header = "; generated by Snapmaker Orca";
+        // Must stay in sync with GCodeProcessor::Producers: upstream OrcaSlicer G-code
+        // shares our config block format, and rejecting its header here would abort
+        // the whole import even though the producer is already recognized there.
+        std::string upstream_orca_gcode_header    = "; generated by OrcaSlicer";
 
         std::string header;
         bool        header_found = false;
@@ -1297,7 +1368,9 @@ ConfigSubstitutions ConfigBase::load_from_gcode_file(const std::string &file, Fo
             line_c = skip_whitespaces(line_c);
             // BBS
             if (strncmp(bambuslicer_gcode_header.c_str(), line_c, strlen(bambuslicer_gcode_header.c_str())) == 0 ||
-                strncmp(Snapmaker_Orca_gcode_header.c_str(), line_c, strlen(Snapmaker_Orca_gcode_header.c_str())) == 0) {
+                strncmp(legacy_fs_gcode_header.c_str(), line_c, strlen(legacy_fs_gcode_header.c_str())) == 0 ||
+                strncmp(compat_snapmaker_gcode_header.c_str(), line_c, strlen(compat_snapmaker_gcode_header.c_str())) == 0 ||
+                strncmp(upstream_orca_gcode_header.c_str(), line_c, strlen(upstream_orca_gcode_header.c_str())) == 0) {
                 header_found = true;
                 break;
             }
@@ -1358,8 +1431,17 @@ ConfigSubstitutions ConfigBase::load_from_gcode_file(const std::string &file, Fo
                     }
                     thumb_content = base64_data;
 
-                    this->set_deserialize("thumb" + std::to_string(thumbnail_id++), thumb_content, substitutions_ctxt);
-                    
+                    // Only thumb0/thumb1 are defined; gcode from upstream OrcaSlicer may carry
+                    // more thumbnail blocks. Skip the undefined ones with a warning instead of
+                    // letting set_deserialize abort the whole import with an unknown-option error.
+                    const std::string thumb_key = "thumb" + std::to_string(thumbnail_id++);
+                    if (this->has(thumb_key)) {
+                        this->set_deserialize(thumb_key, thumb_content, substitutions_ctxt);
+                    } else {
+                        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(
+                            ": no config option for thumbnail block %1% (%2%x%3%), skipping") % (thumbnail_id - 1) % width % height;
+                    }
+
                 }
 
                 // 读取到块结束标记
@@ -1599,6 +1681,9 @@ bool DynamicConfig::read_cli(int argc, const char* const argv[], t_config_option
             parse_options = false;
             continue;
         }
+        // Handled only in GUI instance_check (InstanceCheck.cpp), not as PrintConfig keys.
+        if (token == "--single-instance" || token == "--no-single-instance")
+            continue;
         // Remove leading dashes (one or two).
         token.erase(token.begin(), token.begin() + (boost::starts_with(token, "--") ? 2 : 1));
         // Read value when supplied in the --key=value form.
@@ -1763,7 +1848,11 @@ static inline bool dynamic_config_iterate(const DynamicConfig &lhs, const Dynami
 bool DynamicConfig::equals(const DynamicConfig &other, const std::set<std::string>* skipped_keys) const
 {
     return ! dynamic_config_iterate(*this, other,
-        [](const t_config_option_key & /* key */, const ConfigOption *l, const ConfigOption *r) { return *l != *r; },
+        [](const t_config_option_key & /* key */, const ConfigOption *l, const ConfigOption *r) {
+            if (l->type() != r->type())
+                return true;
+            return *l != *r;
+        },
         skipped_keys);
 }
 
@@ -1773,7 +1862,7 @@ t_config_option_keys DynamicConfig::diff(const DynamicConfig &other) const
     t_config_option_keys diff;
     dynamic_config_iterate(*this, other,
         [&diff](const t_config_option_key &key, const ConfigOption *l, const ConfigOption *r) {
-            if (*l != *r)
+            if (l->type() != r->type() || *l != *r)
                 diff.emplace_back(key);
             // Continue iterating.
             return false;
@@ -1787,7 +1876,7 @@ t_config_option_keys DynamicConfig::equal(const DynamicConfig &other) const
     t_config_option_keys equal;
     dynamic_config_iterate(*this, other,
         [&equal](const t_config_option_key &key, const ConfigOption *l, const ConfigOption *r) {
-            if (*l == *r)
+            if (l->type() == r->type() && *l == *r)
                 equal.emplace_back(key);
             // Continue iterating.
             return false;

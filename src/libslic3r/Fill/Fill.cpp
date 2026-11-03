@@ -1,4 +1,5 @@
 #include <assert.h>
+#include "AABBTreeLines.hpp"
 #include <stdio.h>
 #include <memory>
 
@@ -842,7 +843,8 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 		        const PrintRegionConfig &region_config = layerm.region().config();
 		        FlowRole extrusion_role = surface.is_top() ? frTopSolidInfill : (surface.is_solid() ? frSolidInfill : frInfill);
 		        bool     is_bridge 	    = layer.id() > 0 && surface.is_bridge();
-		        params.extruder 	 = layerm.region().extruder(extrusion_role);
+                const unsigned int effective_extruder = layerm.extruder(extrusion_role);
+		        params.extruder 	 = effective_extruder;
 		        params.pattern 		 = region_config.sparse_infill_pattern.value;
 		        params.density       = float(region_config.sparse_infill_density);
                 params.lateral_lattice_angle_1 = region_config.lateral_lattice_angle_1;
@@ -923,12 +925,14 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 					layerm.flow(extrusion_role, (surface.thickness == -1) ? layer.height : surface.thickness);
 				// record speed params
                 if (!params.bridge) {
+                    const PrintConfig  &print_config = layer.object()->print()->config();
+                    const unsigned int  filament_id  = params.extruder > 0 ? params.extruder - 1 : 0;
                     if (params.extrusion_role == erInternalInfill)
-                        params.sparse_infill_speed = region_config.sparse_infill_speed;
+                        params.sparse_infill_speed = get_value_at(print_config, region_config.sparse_infill_speed, ConfigFlowDomain::Process, filament_id);
                     else if (params.extrusion_role == erTopSolidInfill) {
-                        params.top_surface_speed = region_config.top_surface_speed;
+                        params.top_surface_speed = get_value_at(print_config, region_config.top_surface_speed, ConfigFlowDomain::Process, filament_id);
                     } else if (params.extrusion_role == erSolidInfill)
-                        params.solid_infill_speed = region_config.internal_solid_infill_speed;
+                        params.solid_infill_speed = get_value_at(print_config, region_config.internal_solid_infill_speed, ConfigFlowDomain::Process, filament_id);
                 }
 				// Calculate flow spacing for infill pattern generation.
 		        if (surface.is_solid() || is_bridge) {
@@ -937,11 +941,11 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 		            params.anchor_length = 1000.f;
 					params.anchor_length_max = 1000.f;
 		        } else {
-					// Internal infill. Calculating infill line spacing independent of the current layer height and 1st layer status,
-					// so that internall infill will be aligned over all layers of the current region.
-		            params.spacing = layerm.region().flow(*layer.object(), frInfill, layer.object()->config().layer_height, false).spacing();
+					// Internal infill pattern spacing must stay independent of the current layer height and first-layer line width,
+					// so sparse infill stays aligned over all layers of the current region.
+		            params.spacing = layerm.flow(frInfill, layer.object()->config().layer_height, false).spacing();
 		            // Anchor a sparse infill to inner perimeters with the following anchor length:
-			        params.anchor_length = float(region_config.infill_anchor);
+		        	params.anchor_length = float(region_config.infill_anchor);
 					if (region_config.infill_anchor.percent)
 						params.anchor_length = float(params.anchor_length * 0.01 * params.spacing);
 					params.anchor_length_max = float(region_config.infill_anchor_max);
@@ -953,7 +957,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 				//get locked region param
 				if (params.pattern == ipLockedZag){
 					const PrintObject *object = layerm.layer()->object();
-					auto nozzle_diameter = float(object->print()->config().nozzle_diameter.get_at(layerm.region().extruder(extrusion_role) - 1));
+					auto nozzle_diameter = float(object->print()->config().nozzle_diameter.get_at(effective_extruder - 1));
 					Flow skin_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skin_infill_line_width, nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness));
 					//add skin flow
 					append_flow_param(lock_param.skin_flow_params, skin_flow, surface.expolygon);
@@ -1082,7 +1086,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 	        	}
 	        if (internal_solid_fill == nullptr) {
 	        	// Produce another solid fill.
-		        params.extruder 	 = layerm.region().extruder(frSolidInfill);
+		        params.extruder 	 = layerm.extruder(frSolidInfill);
                 const auto top_pattern = layerm.region().config().top_surface_pattern;
                 if(top_pattern == ipMonotonic || top_pattern == ipMonotonicLine)
                     params.pattern = top_pattern;
@@ -1290,6 +1294,8 @@ void Layer::make_fills(FillAdaptive::Octree* adaptive_fill_octree, FillAdaptive:
 			if(surface_fill.params.bridge && surface_fill.surface.is_external() && surface_fill.params.density > 99.0){
 				params.density = layerm->region().config().bridge_density.get_abs_value(1.0);
 				params.dont_adjust = true;
+				// Snapmaker: >= 100% bridges switch to per-surface edge anchoring (only set site).
+				params.bridge_edge_anchor = params.density >= 0.999f;
 			}
             if(surface_fill.surface.is_internal_bridge()){
                 params.density = f->print_object_config->internal_bridge_density.get_abs_value(1.0);
@@ -1543,7 +1549,7 @@ void Layer::make_ironing()
 				ironing_params.line_spacing = config.ironing_spacing;
                 ironing_params.inset 		= config.ironing_inset;
 				ironing_params.height 		= default_layer_height * 0.01 * config.ironing_flow;
-				ironing_params.speed 		= config.ironing_speed;
+				ironing_params.speed 		= config.ironing_speed.values.front();
                 ironing_params.angle        = (config.ironing_angle >= 0 ? config.ironing_angle : config.infill_direction) * M_PI / 180.;
 				ironing_params.pattern      = config.ironing_pattern;
 				ironing_params.layerm 		= layerm;

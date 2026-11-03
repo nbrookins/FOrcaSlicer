@@ -193,6 +193,32 @@ static const std::unordered_map<std::string, std::string> pre_family_model_map {
     { "SL1",        "SL1" },
 }};
 
+// Snapmaker: flow-variant support ------------------------------------------------------------------
+static const char* preset_flow_support_key(Preset::Type type)
+{
+    switch (type) {
+    case Preset::TYPE_FILAMENT:
+        return flow_support_key(ConfigFlowDomain::Filament);
+    case Preset::TYPE_PRINT:
+        return flow_support_key(ConfigFlowDomain::Process);
+    case Preset::TYPE_PRINTER:
+        return flow_support_key(ConfigFlowDomain::Printer);
+    default:
+        return nullptr;
+    }
+}
+
+static void keep_flow_support_in_differential_save(const Preset &preset, std::vector<std::string> &dirty_options)
+{
+    const char *support_key = preset_flow_support_key(preset.type);
+    if (support_key == nullptr)
+        return;
+
+    const auto *flow_support = preset.config.option<ConfigOptionStrings>(support_key);
+    if (flow_support != nullptr && flow_support->values.size() > 1)
+        dirty_options.emplace_back(support_key);
+}
+
 VendorProfile VendorProfile::from_ini(const ptree &tree, const boost::filesystem::path &path, bool load_all)
 {
     static const std::string printer_model_key = "printer_model:";
@@ -376,25 +402,73 @@ void Preset::normalize(DynamicPrintConfig &config)
         }
     }
 
+    const auto &defaults = FullPrintConfig::defaults();
+
     if (config.option("filament_diameter") != nullptr) {
         // This config contains single or multiple filament presets.
         // Ensure that the filament preset vector options contain the correct number of values.
-        const auto &defaults = FullPrintConfig::defaults();
-        for (const std::string &key : Preset::filament_options()) {
-            if (key == "compatible_prints" || key == "compatible_printers")
-                continue;
-            auto *opt = config.option(key, false);
-            /*assert(opt != nullptr);
-            assert(opt->is_vector());*/
-            if (opt != nullptr && opt->is_vector() && static_cast<ConfigOptionVectorBase*>(opt)->size() < n)
-                static_cast<ConfigOptionVectorBase*>(opt)->resize(n, defaults.option(key));
+        const auto *filament_flow_support = config.option<ConfigOptionStrings>("filament_flow_support");
+        const auto *filament_flow_step_sizes = config.option<ConfigOptionInts>("filament_flow_step_size");
+        size_t flow_variant_value_count = n;
+        if (n == 1 && filament_flow_support != nullptr && !filament_flow_support->values.empty()) {
+            // A standalone filament preset is declaration-driven. Its default
+            // step-size option is not composed-config segment metadata.
+            flow_variant_value_count = filament_flow_support->values.size();
+        } else if (filament_flow_step_sizes != nullptr && filament_flow_step_sizes->values.size() == n) {
+            flow_variant_value_count = 0;
+            for (int step_size : filament_flow_step_sizes->values)
+                flow_variant_value_count += size_t(std::max(1, step_size));
         }
-        // The following keys are mandatory for the UI, but they are not part of FullPrintConfig, therefore they are handled separately.
-        for (const std::string key : { "filament_settings_id" }) {
+        for (const std::string &key : Preset::filament_options()) {
+            if (key == "compatible_prints" || key == "compatible_printers" || key == "filament_flow_support")
+                continue;
+
             auto *opt = config.option(key, false);
-            assert(opt == nullptr || opt->type() == coStrings);
+            if (opt == nullptr) {
+                const ConfigOption* default_opt = defaults.option(key);
+                if (default_opt != nullptr) {
+                    config.set_key_value(key, default_opt->clone());
+                    opt = config.option(key, false);
+                }
+            }
+            if (opt != nullptr && opt->is_vector()) {
+                const size_t expected_size = is_filament_flow_variant_option(key) ? flow_variant_value_count : n;
+                if (static_cast<ConfigOptionVectorBase*>(opt)->size() < expected_size)
+                    static_cast<ConfigOptionVectorBase*>(opt)->resize(expected_size, defaults.option(key));
+            }
+        }
+        for (const std::string key : {"filament_settings_id"}) {
+            auto *opt = config.option(key, false);
             if (opt != nullptr && opt->type() == coStrings && static_cast<ConfigOptionStrings*>(opt)->values.size() < n)
                 static_cast<ConfigOptionStrings*>(opt)->values.resize(n, std::string());
+        }
+    } else if (config.option("layer_height") != nullptr) {
+        // Print config: ensure all expected options exist in the loaded profile.
+        for (const std::string &key : Preset::print_options()) {
+            if (!config.has(key)) {
+                const ConfigOption* default_opt = defaults.option(key);
+                if (default_opt != nullptr)
+                    config.set_key_value(key, default_opt->clone());
+            }
+        }
+
+        const auto *process_flow_support = config.option<ConfigOptionStrings>(flow_support_key(ConfigFlowDomain::Process));
+        const size_t flow_variant_count = process_flow_support == nullptr || process_flow_support->values.empty()
+            ? 1
+            : process_flow_support->values.size();
+        for (const std::string &key : process_flow_variant_options()) {
+            auto *option = dynamic_cast<ConfigOptionVectorBase *>(config.option(key, false));
+            if (option != nullptr && option->size() < flow_variant_count)
+                option->resize(flow_variant_count, defaults.option(key));
+        }
+    } else if (config.option("nozzle_diameter") != nullptr) {
+        // Printer config: ensure all expected options exist in the loaded profile.
+        for (const std::string &key : Preset::printer_options()) {
+            if (!config.has(key)) {
+                const ConfigOption* default_opt = defaults.option(key);
+                if (default_opt != nullptr)
+                    config.set_key_value(key, default_opt->clone());
+            }
         }
     }
 	if (config.option("inner_wall_filament") == nullptr)
@@ -578,12 +652,38 @@ void Preset::save(DynamicPrintConfig* parent_config)
 
     //BBS: only save difference if it has parent
     if (parent_config) {
+        auto option_differs_from_default = [](const ConfigBase &cfg, const t_config_option_key &opt_key, const ConfigOption *opt) {
+            if (opt == nullptr)
+                return false;
+            const ConfigDef *def = cfg.def();
+            if (def == nullptr)
+                return true;
+            const ConfigOptionDef *opt_def = def->get(opt_key);
+            if (opt_def == nullptr || opt_def->default_value.get() == nullptr)
+                return true;
+            if (opt->type() != opt_def->default_value->type())
+                return true;
+            return *opt != *opt_def->default_value;
+        };
+
         DynamicPrintConfig temp_config;
         std::vector<std::string> dirty_options = config.diff(*parent_config);
+        for (const t_config_option_key &opt_key : config.keys()) {
+            const ConfigOption *opt_src = config.option(opt_key);
+            if (opt_src != nullptr && parent_config->option(opt_key) == nullptr &&
+                option_differs_from_default(config, opt_key, opt_src))
+                dirty_options.emplace_back(opt_key);
+        }
 
-        for (auto option: dirty_options)
-        {
-            ConfigOption *opt_src = config.option(option);
+        keep_flow_support_in_differential_save(*this, dirty_options);
+
+        std::sort(dirty_options.begin(), dirty_options.end());
+        dirty_options.erase(std::unique(dirty_options.begin(), dirty_options.end()), dirty_options.end());
+
+        for (const std::string &option : dirty_options) {
+            const ConfigOption *opt_src = config.option(option);
+            if (opt_src == nullptr)
+                continue;
             ConfigOption *opt_dst = temp_config.option(option, true);
             opt_dst->set(opt_src);
         }
@@ -839,6 +939,7 @@ bool Preset::has_cali_lines(PresetBundle* preset_bundle)
 static std::vector<std::string> s_Preset_print_options {
     "layer_height", "initial_layer_print_height", "wall_loops", "outer_wall_loops", "alternate_extra_wall", "slice_closing_radius", "spiral_mode", "spiral_mode_smooth", "spiral_mode_max_xy_smoothing", "spiral_starting_flow_ratio", "spiral_finishing_flow_ratio", "slicing_mode",
     "top_shell_layers", "top_shell_thickness", "top_surface_density", "bottom_surface_density", "bottom_shell_layers", "bottom_shell_thickness",
+    "top_color_penetration_layers", "bottom_color_penetration_layers",
     "extra_perimeters_on_overhangs", "ensure_vertical_shell_thickness", "reduce_crossing_wall", "detect_thin_wall", "detect_overhang_wall", "overhang_reverse", "overhang_reverse_threshold","overhang_reverse_internal_only", "wall_direction",
     "seam_position", "staggered_inner_seams", "wall_sequence", "is_infill_first", "sparse_infill_density","fill_multiline", "sparse_infill_pattern", "lateral_lattice_angle_1", "lateral_lattice_angle_2", "infill_overhang_angle", "top_surface_pattern", "bottom_surface_pattern",
     "infill_direction", "solid_infill_direction", "counterbore_hole_bridging","infill_shift_step", "sparse_infill_rotate_template", "solid_infill_rotate_template", "symmetric_infill_y_axis","skeleton_infill_density", "infill_lock_depth", "skin_infill_depth", "skin_infill_density",
@@ -859,6 +960,7 @@ static std::vector<std::string> s_Preset_print_options {
     "independent_support_layer_height",
     "support_angle", "support_interface_top_layers", "support_interface_bottom_layers",
     "support_interface_pattern", "support_interface_spacing", "support_interface_loop_pattern",
+    "support_interface_min_area",
     "support_top_z_distance", "support_on_build_plate_only","support_critical_regions_only", "bridge_no_support", "thick_bridges", "thick_internal_bridges","dont_filter_internal_bridges","enable_extra_bridge_layer", "max_bridge_length", "print_sequence", "print_order", "support_remove_small_overhang",
     "filename_format", "wall_filament", "inner_wall_filament", "support_bottom_z_distance",
     "sparse_infill_filament", "solid_infill_filament", "support_filament", "support_interface_filament","support_interface_not_for_body",
@@ -867,7 +969,7 @@ static std::vector<std::string> s_Preset_print_options {
     "skin_infill_line_width","skeleton_infill_line_width",
     "top_surface_line_width", "support_line_width", "infill_wall_overlap","top_bottom_infill_wall_overlap", "bridge_flow", "internal_bridge_flow",
     "elefant_foot_compensation", "elefant_foot_compensation_layers", "xy_contour_compensation", "xy_hole_compensation", "resolution", "enable_prime_tower",
-    "prime_tower_width", "prime_tower_brim_width", "prime_volume", "prime_tower_brim_chamfer", "prime_tower_brim_chamfer_max_width",
+    "prime_tower_width", "prime_tower_brim_width", "prime_volume", "prime_tower_brim_chamfer", "prime_tower_brim_chamfer_max_width", "enable_tower_interface_features", "enable_tower_interface_cooldown_during_tower",
     "tower_line_width", // FOS 8.5: per-nozzle prime tower line width, authored in the nozzle notebook
     "wipe_tower_no_sparse_layers", "compatible_printers", "compatible_printers_condition", "inherits",
     "flush_into_infill", "flush_into_objects", "flush_into_support",
@@ -880,8 +982,8 @@ static std::vector<std::string> s_Preset_print_options {
      "timelapse_type",
      "wall_generator", "wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
      "wall_distribution_count", "min_feature_size", "min_bead_width", "post_process", "min_length_factor",
-     "small_perimeter_speed", "small_perimeter_threshold","bridge_angle","internal_bridge_angle", "filter_out_gap_fill", "travel_acceleration","inner_wall_acceleration", "min_width_top_surface",
-     "default_jerk", "outer_wall_jerk", "inner_wall_jerk", "infill_jerk", "top_surface_jerk", "initial_layer_jerk","travel_jerk","default_junction_deviation",
+     "small_perimeter_speed", "small_perimeter_threshold","bridge_angle","internal_bridge_angle", "filter_out_gap_fill", "travel_acceleration","first_layer_travel_acceleration","inner_wall_acceleration", "min_width_top_surface",
+     "default_jerk", "outer_wall_jerk", "inner_wall_jerk", "infill_jerk", "top_surface_jerk", "initial_layer_jerk","travel_jerk","first_layer_travel_jerk","default_junction_deviation",
      "top_solid_infill_flow_ratio","bottom_solid_infill_flow_ratio","only_one_wall_first_layer", "print_flow_ratio", "seam_gap",
      "role_based_wipe_speed", "wipe_speed", "accel_to_decel_enable", "accel_to_decel_factor", "wipe_on_loops", "wipe_before_external_loop",
      "bridge_density","internal_bridge_density", "precise_outer_wall", "bridge_acceleration",
@@ -889,20 +991,26 @@ static std::vector<std::string> s_Preset_print_options {
      "tree_support_brim_width", "gcode_comments", "gcode_label_objects",
      "initial_layer_travel_speed", "exclude_object", "slow_down_layers", "infill_anchor", "infill_anchor_max","initial_layer_min_bead_width",
      "make_overhang_printable", "make_overhang_printable_angle", "make_overhang_printable_hole_size" ,"notes",
-     "wipe_tower_cone_angle", "wipe_tower_extra_spacing","wipe_tower_max_purge_speed", 
+     "wipe_tower_cone_angle", "wipe_tower_extra_spacing","wipe_tower_max_purge_speed", "local_z_wipe_tower_purge_lines",
      "wipe_tower_wall_type", "wipe_tower_extra_rib_length", "wipe_tower_rib_width", "wipe_tower_fillet_wall",
      "wipe_tower_filament", "wiping_volumes_extruders","wipe_tower_bridging", "wipe_tower_extra_flow","single_extruder_multi_material_priming",
-     "wipe_tower_rotation_angle", "tree_support_branch_distance_organic", "tree_support_branch_diameter_organic", "tree_support_branch_angle_organic",
+     "wipe_tower_rotation_angle", "wipe_tower_wall_gap", "prime_tower_enable_framework", "tree_support_branch_distance_organic", "tree_support_branch_diameter_organic", "tree_support_branch_angle_organic",
+     "tree_support_transition_layers", "support_transition_perimeter", "support_transition_speed", "support_transition_flow_ratio",
      "hole_to_polyhole", "hole_to_polyhole_threshold", "hole_to_polyhole_twisted", "mmu_segmented_region_max_width", "mmu_segmented_region_interlocking_depth",
      "small_area_infill_flow_compensation", "small_area_infill_flow_compensation_model",
      "seam_slope_type", "seam_slope_conditional", "scarf_angle_threshold", "scarf_joint_speed", "scarf_joint_flow_ratio", "seam_slope_start_height", "seam_slope_entire_loop", "seam_slope_min_length", "seam_slope_steps", "seam_slope_inner_walls", "scarf_overhang_threshold",
-     "interlocking_beam", "interlocking_orientation", "interlocking_beam_layer_count", "interlocking_depth", "interlocking_boundary_avoidance", "interlocking_beam_width","calib_flowrate_topinfill_special_order",
+     "interlocking_beam", "interlocking_orientation", "interlocking_beam_layer_count", "interlocking_depth", "interlocking_boundary_avoidance", "interlocking_beam_width",
+     "dithering_local_z_mode",
+     "dithering_local_z_whole_objects",
+     "dithering_local_z_infill",
+     "calib_flowrate_topinfill_special_order",
+     "process_flow_support",
 };
 
 static std::vector<std::string> s_Preset_filament_options {
     /*"filament_colour", */ "default_filament_colour","required_nozzle_HRC","filament_diameter", "pellet_flow_coefficient", "filament_type", "filament_soluble", "filament_is_support",
     "filament_max_volumetric_speed",
-    "filament_flow_ratio", "filament_density", "filament_cost", "filament_minimal_purge_on_wipe_tower",
+    "filament_flow_ratio", "filament_density", "filament_adhesiveness_category", "filament_cost", "filament_minimal_purge_on_wipe_tower",
     "nozzle_temperature", "nozzle_temperature_initial_layer",
     // BBS
     "cool_plate_temp", "textured_cool_plate_temp", "eng_plate_temp", "hot_plate_temp", "textured_plate_temp",
@@ -911,7 +1019,8 @@ static std::vector<std::string> s_Preset_filament_options {
     "graphic_effect_plate_temp", "graphic_effect_plate_temp_initial_layer",
     // "bed_type",
     //BBS:temperature_vitrification
-    "temperature_vitrification", "reduce_fan_stop_start_freq","dont_slow_down_outer_wall", "slow_down_for_layer_cooling", "fan_min_speed",
+    "temperature_vitrification", "filament_is_high_temperature", "reduce_fan_stop_start_freq", "dont_slow_down_outer_wall",
+    "slow_down_for_layer_cooling", "fan_min_speed",
     "fan_max_speed", "enable_overhang_bridge_fan", "overhang_fan_speed", "overhang_fan_threshold", "close_fan_the_first_x_layers", "full_fan_speed_layer", "fan_cooling_layer_time", "slow_down_layer_time", "slow_down_min_speed",
     "filament_start_gcode", "filament_end_gcode",
     //exhaust fan control
@@ -931,7 +1040,10 @@ static std::vector<std::string> s_Preset_filament_options {
     "filament_unloading_speed", "filament_unloading_speed_start", "filament_toolchange_delay", "filament_cooling_moves", "filament_stamping_loading_speed", "filament_stamping_distance",
     "filament_cooling_initial_speed", "filament_cooling_final_speed", "filament_ramming_parameters",
     "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow", "activate_chamber_temp_control",
-    "filament_long_retractions_when_cut","filament_retraction_distances_when_cut", "idle_temperature"
+    "filament_long_retractions_when_cut","filament_retraction_distances_when_cut", "idle_temperature",
+    "filament_tower_ironing_area", "filament_tower_interface_pre_extrusion_dist",
+    "filament_tower_interface_pre_extrusion_length", "filament_tower_interface_print_temp",
+    "filament_flow_support"
     };
 
 static std::vector<std::string> s_Preset_machine_limits_options {
@@ -965,7 +1077,8 @@ static std::vector<std::string> s_Preset_printer_options {
     "cooling_tube_retraction",
     "cooling_tube_length", "high_current_on_filament_swap", "parking_pos_retraction", "extra_loading_move", "purge_in_prime_tower", "enable_filament_ramming", "ramming_line_width_ratio", "enable_change_pressure_when_wiping", "ramming_pressure_advance_value", 
     "z_offset",
-    "disable_m73", "preferred_orientation", "emit_machine_limits_to_gcode", "pellet_modded_printer", "support_multi_bed_types", "default_bed_type", "bed_mesh_min","bed_mesh_max","bed_mesh_probe_distance", "adaptive_bed_mesh_margin", "enable_long_retraction_when_cut","long_retractions_when_cut","retraction_distances_when_cut"
+    "disable_m73", "preferred_orientation", "emit_machine_limits_to_gcode", "pellet_modded_printer", "support_multi_bed_types", "default_bed_type", "bed_mesh_min","bed_mesh_max","bed_mesh_probe_distance", "adaptive_bed_mesh_margin", "enable_long_retraction_when_cut","long_retractions_when_cut","retraction_distances_when_cut",
+    "printer_flow_support"
     };
 
 static std::vector<std::string> s_Preset_sla_print_options {
@@ -1174,12 +1287,6 @@ void PresetCollection::load_presets(
         if (Slic3r::is_json_file(file_name)) {
             // Remove the .ini suffix.
             std::string name = file_name.erase(file_name.size() - 5);
-            if (this->find_preset(name, false)) {
-                // This happens when there's is a preset (most likely legacy one) with the same name as a system preset
-                // that's already been loaded from a bundle.
-                BOOST_LOG_TRIVIAL(warning) << "Preset already present, not loading: " << name;
-                continue;
-            }
             try {
                 Preset preset(m_type, name, false);
                 preset.file = dir_entry.path().string();
@@ -1207,6 +1314,28 @@ void PresetCollection::load_presets(
                             fs::remove(file_path);
                         BOOST_LOG_TRIVIAL(error) << boost::format("parse config %1% failed")%preset.file;
                         ++m_errors;
+                        continue;
+                    }
+
+                    auto type_it = key_values.find(BBL_JSON_KEY_TYPE);
+                    if (type_it != key_values.end()) {
+                        Preset::Type file_type = Preset::get_type_from_string(type_it->second);
+                        if (file_type != m_type) {
+                            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(
+                                ": skip preset %1% because file type %2% does not match collection type %3%")
+                                % preset.file % type_it->second % Preset::get_type_string(m_type);
+                            continue;
+                        }
+                    }
+
+                    auto name_it = key_values.find(BBL_JSON_KEY_NAME);
+                    if (name_it != key_values.end() && !name_it->second.empty())
+                        preset.name = name_it->second;
+
+                    if (this->find_preset(preset.name, false)) {
+                        // This happens when there is a preset with the same logical name already loaded,
+                        // typically from a system bundle or from another JSON file with a different filename.
+                        BOOST_LOG_TRIVIAL(warning) << "Preset already present, not loading: " << preset.name;
                         continue;
                     }
 
@@ -1254,7 +1383,7 @@ void PresetCollection::load_presets(
                         // Find a default preset for the config. The PrintPresetCollection provides different default preset based on the "printer_technology" field.
                         preset.config = default_preset.config;
                     }
-                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " load preset: " << name << " and filament_id: " << preset.filament_id << " and base_id: " << preset.base_id;
+                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " load preset: " << preset.name << " and filament_id: " << preset.filament_id << " and base_id: " << preset.base_id;
                     preset.config.apply(std::move(config));
                     Preset::normalize(preset.config);
                     // Report configuration fields, which are misplaced into a wrong group.
@@ -1330,12 +1459,38 @@ Preset* PresetCollection::get_preset_differed_for_save(Preset& preset)
         parent_preset = this->find_preset(inherits, false, true);
     }
     if (parent_preset) {
+        auto option_differs_from_default = [](const ConfigBase &cfg, const t_config_option_key &opt_key, const ConfigOption *opt) {
+            if (opt == nullptr)
+                return false;
+            const ConfigDef *def = cfg.def();
+            if (def == nullptr)
+                return true;
+            const ConfigOptionDef *opt_def = def->get(opt_key);
+            if (opt_def == nullptr || opt_def->default_value.get() == nullptr)
+                return true;
+            if (opt->type() != opt_def->default_value->type())
+                return true;
+            return *opt != *opt_def->default_value;
+        };
+
         DynamicPrintConfig temp_config;
         std::vector<std::string> dirty_options = preset.config.diff(parent_preset->config);
+        for (const t_config_option_key &opt_key : preset.config.keys()) {
+            const ConfigOption *opt_src = preset.config.option(opt_key);
+            if (opt_src != nullptr && parent_preset->config.option(opt_key) == nullptr &&
+                option_differs_from_default(preset.config, opt_key, opt_src))
+                dirty_options.emplace_back(opt_key);
+        }
 
-        for (auto option: dirty_options)
-        {
-            ConfigOption *opt_src = preset.config.option(option);
+        keep_flow_support_in_differential_save(preset, dirty_options);
+
+        std::sort(dirty_options.begin(), dirty_options.end());
+        dirty_options.erase(std::unique(dirty_options.begin(), dirty_options.end()), dirty_options.end());
+
+        for (const std::string &option : dirty_options) {
+            const ConfigOption *opt_src = preset.config.option(option);
+            if (opt_src == nullptr)
+                continue;
             ConfigOption *opt_dst = temp_config.option(option, true);
             opt_dst->set(opt_src);
         }
@@ -1361,12 +1516,36 @@ int PresetCollection::get_differed_values_to_update(Preset& preset, std::map<std
         parent_preset = this->find_preset(inherit_preset, false, true);
     }
     if (parent_preset) {
+        auto option_differs_from_default = [](const ConfigBase &cfg, const t_config_option_key &opt_key, const ConfigOption *opt) {
+            if (opt == nullptr)
+                return false;
+            const ConfigDef *def = cfg.def();
+            if (def == nullptr)
+                return true;
+            const ConfigOptionDef *opt_def = def->get(opt_key);
+            if (opt_def == nullptr || opt_def->default_value.get() == nullptr)
+                return true;
+            if (opt->type() != opt_def->default_value->type())
+                return true;
+            return *opt != *opt_def->default_value;
+        };
+
         DynamicPrintConfig temp_config;
         std::vector<std::string> dirty_options = preset.config.diff(parent_preset->config);
+        for (const t_config_option_key &opt_key : preset.config.keys()) {
+            const ConfigOption *opt_src = preset.config.option(opt_key);
+            if (opt_src != nullptr && parent_preset->config.option(opt_key) == nullptr &&
+                option_differs_from_default(preset.config, opt_key, opt_src))
+                dirty_options.emplace_back(opt_key);
+        }
 
-        for (auto option: dirty_options)
-        {
-            ConfigOption *opt_src = preset.config.option(option);
+        keep_flow_support_in_differential_save(preset, dirty_options);
+
+        std::sort(dirty_options.begin(), dirty_options.end());
+        dirty_options.erase(std::unique(dirty_options.begin(), dirty_options.end()), dirty_options.end());
+
+        for (const std::string &option : dirty_options) {
+            const ConfigOption *opt_src = preset.config.option(option);
             if (opt_src)
                 key_values[option] = opt_src->serialize();
         }
@@ -1962,7 +2141,7 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
                     continue;
                 ConfigOption *opt_src = iter->config.option(opt);
                 ConfigOption *opt_dst = cfg.option(opt);
-                if (opt_src && opt_dst && (*opt_src != *opt_dst)) {
+                if (opt_src && opt_dst && opt_src->type() == opt_dst->type() && (*opt_src != *opt_dst)) {
                     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" change key %1% from old_value %2% to inherit's value %3%, preset_name %4%, inherits_name %5%")
                             %opt %(opt_dst->serialize()) %(opt_src->serialize()) %original_name %inherits;
                     opt_dst->set(opt_src);
@@ -1976,7 +2155,7 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
                 continue;
             ConfigOption *opt_src = it->config.option(opt);
             ConfigOption *opt_dst = cfg.option(opt);
-            if (opt_src && opt_dst && (*opt_src != *opt_dst)) {
+            if (opt_src && opt_dst && opt_src->type() == opt_dst->type() && (*opt_src != *opt_dst)) {
                 BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" change key %1% from old_value %2% to new_value %3%, preset_name %4%")
                         %opt %(opt_dst->serialize()) %(opt_src->serialize()) %original_name;
                 opt_dst->set(opt_src);
@@ -2786,6 +2965,42 @@ void add_correct_opts_to_diff(const std::string &opt_key, t_config_option_keys& 
     }
 }
 
+static bool option_differs_from_default(const ConfigBase &cfg, const t_config_option_key &opt_key, const ConfigOption *opt)
+{
+    if (opt == nullptr)
+        return false;
+    const ConfigDef *def = cfg.def();
+    if (def == nullptr)
+        return true;
+    const ConfigOptionDef *opt_def = def->get(opt_key);
+    if (opt_def == nullptr || opt_def->default_value.get() == nullptr)
+        return true;
+    if (opt->type() != opt_def->default_value->type())
+        return true;
+    return *opt != *opt_def->default_value;
+}
+
+static void append_missing_nondefault_options(const ConfigBase &edited, const ConfigBase &reference,
+                                              t_config_option_keys &diff, const std::set<std::string> *skip = nullptr)
+{
+    for (const t_config_option_key &opt_key : edited.keys()) {
+        if (skip && skip->count(opt_key) != 0)
+            continue;
+        const ConfigOption *edited_opt = edited.option(opt_key);
+        if (edited_opt == nullptr || reference.option(opt_key) != nullptr)
+            continue;
+        if (option_differs_from_default(edited, opt_key, edited_opt))
+            diff.emplace_back(opt_key);
+    }
+}
+
+static bool has_missing_nondefault_option(const ConfigBase &edited, const ConfigBase &reference, const std::set<std::string> *skip = nullptr)
+{
+    t_config_option_keys missing;
+    append_missing_nondefault_options(edited, reference, missing, skip);
+    return !missing.empty();
+}
+
 // Use deep_diff to correct return of changed options, considering individual options for each extruder.
 inline t_config_option_keys deep_diff(const ConfigBase &config_this, const ConfigBase &config_other)
 {
@@ -2793,8 +3008,13 @@ inline t_config_option_keys deep_diff(const ConfigBase &config_this, const Confi
     for (const t_config_option_key &opt_key : config_this.keys()) {
         const ConfigOption *this_opt  = config_this.option(opt_key);
         const ConfigOption *other_opt = config_other.option(opt_key);
-        if (this_opt != nullptr && other_opt != nullptr && *this_opt != *other_opt)
-        {
+        if (this_opt != nullptr && other_opt != nullptr) {
+            if (this_opt->type() != other_opt->type()) {
+                diff.emplace_back(opt_key);
+                continue;
+            }
+            if (*this_opt == *other_opt)
+                continue;
             //BBS: add bed_exclude_area
             if (opt_key == "printable_area" || opt_key == "bed_exclude_area" || opt_key == "compatible_prints" || opt_key == "compatible_printers" || opt_key == "thumbnails") {
                 // Scalar variable, or a vector variable, which is independent from number of extruders,
@@ -2828,18 +3048,23 @@ inline t_config_option_keys deep_diff(const ConfigBase &config_this, const Confi
             }
         }
     }
+    append_missing_nondefault_options(config_this, config_other, diff);
+    std::sort(diff.begin(), diff.end());
+    diff.erase(std::unique(diff.begin(), diff.end()), diff.end());
     return diff;
 }
 
 static constexpr const std::initializer_list<const char*> optional_keys { "compatible_prints", "compatible_printers" };
 //BBS: skip these keys for dirty check
-static std::set<std::string> skipped_in_dirty = {"printer_settings_id", "print_settings_id", "filament_settings_id"};
+static std::set<std::string> skipped_in_dirty = {"printer_settings_id", "print_settings_id", "filament_settings_id", "mixed_filament_definitions"};
 
 bool PresetCollection::is_dirty(const Preset *edited, const Preset *reference)
 {
     if (edited != nullptr && reference != nullptr) {
         // Only compares options existing in both configs.
         if (! reference->config.equals(edited->config, &skipped_in_dirty))
+            return true;
+        if (has_missing_nondefault_option(edited->config, reference->config, &skipped_in_dirty))
             return true;
         // The "compatible_printers" option key is handled differently from the others:
         // It is not mandatory. If the key is missing, it means it is compatible with any printer.
@@ -2851,6 +3076,120 @@ bool PresetCollection::is_dirty(const Preset *edited, const Preset *reference)
     return false;
 }
 
+template<class T>
+void add_flow_variant_opts_to_diff(const std::string &opt_key,
+                                   t_config_option_keys &diff,
+                                   const ConfigBase &edited,
+                                   const ConfigBase &reference,
+                                   const ConfigOptionStrings &edited_modes,
+                                   const ConfigOptionStrings *reference_modes)
+{
+    const auto *edited_values = dynamic_cast<const T *>(edited.option(opt_key));
+    const auto *reference_values = dynamic_cast<const T *>(reference.option(opt_key));
+    const ConfigOptionDef *option_def = edited.def() == nullptr ? nullptr : edited.def()->get(opt_key);
+    const auto *default_values = option_def == nullptr ? nullptr :
+        dynamic_cast<const T *>(option_def->default_value.get());
+    if (edited_values == nullptr || reference_values == nullptr)
+        return;
+
+    for (size_t edited_index = 0; edited_index < edited_modes.values.size() && edited_index < edited_values->values.size(); ++edited_index) {
+        const T *comparison_values = nullptr;
+        size_t comparison_index = 0;
+        if (reference_modes == nullptr) {
+            if (edited_index == 0 && !reference_values->values.empty())
+                comparison_values = reference_values;
+        } else {
+            const auto mode = std::find(reference_modes->values.begin(), reference_modes->values.end(),
+                                        edited_modes.values[edited_index]);
+            if (mode != reference_modes->values.end()) {
+                const size_t reference_index = size_t(std::distance(reference_modes->values.begin(), mode));
+                if (reference_index < reference_values->values.size()) {
+                    comparison_values = reference_values;
+                    comparison_index = reference_index;
+                }
+            }
+        }
+
+        // A mode not declared by the reference preset has no inherited override.
+        // Compare it with the option default instead of borrowing the standard-flow value.
+        if (comparison_values == nullptr && default_values != nullptr && !default_values->values.empty()) {
+            comparison_values = default_values;
+            comparison_index = std::min(edited_index, default_values->values.size() - 1);
+        }
+        if (comparison_values == nullptr && !reference_values->values.empty())
+            comparison_values = reference_values;
+
+        bool differs = comparison_values == nullptr;
+        if (!differs && edited_values->nullable()) {
+            const bool edited_is_nil = edited_values->is_nil(edited_index);
+            const bool comparison_is_nil = comparison_values->is_nil(comparison_index);
+            differs = edited_is_nil != comparison_is_nil;
+            if (!differs && edited_is_nil)
+                continue;
+        }
+        if (!differs)
+            differs = edited_values->values[edited_index] != comparison_values->values[comparison_index];
+        if (differs)
+            diff.emplace_back(opt_key + "#" + std::to_string(edited_index));
+    }
+}
+
+std::vector<std::string> PresetCollection::flow_variant_dirty_options(
+    const Preset *edited,
+    const Preset *reference,
+    ConfigFlowDomain domain,
+    const std::vector<std::string> &option_keys)
+{
+    std::vector<std::string> changed;
+    if (edited == nullptr || reference == nullptr)
+        return changed;
+
+    const auto *edited_support = edited->config.option<ConfigOptionStrings>(flow_support_key(domain));
+    const auto *reference_support = reference->config.option<ConfigOptionStrings>(flow_support_key(domain));
+    if (edited_support == nullptr)
+        return changed;
+
+    for (const std::string &key : option_keys) {
+        const ConfigOption *edited_option = edited->config.option(key);
+        const ConfigOption *reference_option = reference->config.option(key);
+        if (edited_option == nullptr || reference_option == nullptr ||
+            edited_option->type() != reference_option->type())
+            continue;
+        if (*edited_option == *reference_option)
+            continue;
+
+        switch (edited_option->type()) {
+        case coInts:     add_flow_variant_opts_to_diff<ConfigOptionInts>(key, changed, edited->config, reference->config, *edited_support, reference_support); break;
+        case coBools:
+            if (edited_option->nullable())
+                add_flow_variant_opts_to_diff<ConfigOptionBoolsNullable>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            else
+                add_flow_variant_opts_to_diff<ConfigOptionBools>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            break;
+        case coFloats:
+            if (edited_option->nullable())
+                add_flow_variant_opts_to_diff<ConfigOptionFloatsNullable>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            else
+                add_flow_variant_opts_to_diff<ConfigOptionFloats>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            break;
+        case coFloatsOrPercents:
+            if (edited_option->nullable())
+                add_flow_variant_opts_to_diff<ConfigOptionFloatsOrPercentsNullable>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            else
+                add_flow_variant_opts_to_diff<ConfigOptionFloatsOrPercents>(key, changed, edited->config, reference->config, *edited_support, reference_support);
+            break;
+        case coStrings:  add_flow_variant_opts_to_diff<ConfigOptionStrings>(key, changed, edited->config, reference->config, *edited_support, reference_support); break;
+        case coPercents: add_flow_variant_opts_to_diff<ConfigOptionPercents>(key, changed, edited->config, reference->config, *edited_support, reference_support); break;
+        case coEnums:    add_flow_variant_opts_to_diff<ConfigOptionInts>(key, changed, edited->config, reference->config, *edited_support, reference_support); break;
+        default:         changed.emplace_back(key); break;
+        }
+    }
+
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    return changed;
+}
+
 std::vector<std::string> PresetCollection::dirty_options(const Preset *edited, const Preset *reference, const bool deep_compare /*= false*/)
 {
     std::vector<std::string> changed;
@@ -2859,12 +3198,15 @@ std::vector<std::string> PresetCollection::dirty_options(const Preset *edited, c
         changed = deep_compare ?
                 deep_diff(edited->config, reference->config) :
                 reference->config.diff(edited->config);
+        append_missing_nondefault_options(edited->config, reference->config, changed);
         // The "compatible_printers" option key is handled differently from the others:
         // It is not mandatory. If the key is missing, it means it is compatible with any printer.
         // If the key exists and it is empty, it means it is compatible with no printer.
         for (auto &opt_key : optional_keys)
             if (reference->config.has(opt_key) != edited->config.has(opt_key))
                 changed.emplace_back(opt_key);
+        std::sort(changed.begin(), changed.end());
+        changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
     }
     return changed;
 }
@@ -2878,6 +3220,7 @@ std::vector<std::string> PresetCollection::dirty_options_without_option_list(con
         changed = deep_compare ?
                 deep_diff(edited->config, reference->config) :
                 reference->config.diff(edited->config);
+        append_missing_nondefault_options(edited->config, reference->config, changed);
         // The "compatible_printers" option key is handled differently from the others:
         // It is not mandatory. If the key is missing, it means it is compatible with any printer.
         // If the key exists and it is empty, it means it is compatible with no printer.
@@ -2885,6 +3228,8 @@ std::vector<std::string> PresetCollection::dirty_options_without_option_list(con
             if (reference->config.has(opt_key) != edited->config.has(opt_key))
                 changed.emplace_back(opt_key);
         }
+        std::sort(changed.begin(), changed.end());
+        changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
         auto iter = changed.begin();
         while (iter != changed.end()) {
             if (option_ignore_list.find(*iter) != option_ignore_list.end()) {

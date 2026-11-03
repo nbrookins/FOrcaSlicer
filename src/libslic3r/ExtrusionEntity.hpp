@@ -170,7 +170,9 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    {
+        this->inset_idx = rhs.inset_idx;
+    }
     ExtrusionPath(ExtrusionPath &&rhs)
         : polyline(std::move(rhs.polyline))
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -179,7 +181,9 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    {
+        this->inset_idx = rhs.inset_idx;
+    }
     ExtrusionPath(const Polyline &polyline, const ExtrusionPath &rhs)
         : polyline(polyline)
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -188,7 +192,9 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    {
+        this->inset_idx = rhs.inset_idx;
+    }
     ExtrusionPath(Polyline &&polyline, const ExtrusionPath &rhs)
         : polyline(std::move(polyline))
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -197,7 +203,9 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    {
+        this->inset_idx = rhs.inset_idx;
+    }
 
     ExtrusionPath& operator=(const ExtrusionPath& rhs) {
         m_can_reverse = rhs.m_can_reverse;
@@ -207,6 +215,7 @@ public:
         this->width = rhs.width;
         this->height = rhs.height;
         this->polyline = rhs.polyline;
+        this->inset_idx = rhs.inset_idx;
         return *this;
     }
     ExtrusionPath& operator=(ExtrusionPath&& rhs) {
@@ -217,6 +226,7 @@ public:
         this->width = rhs.width;
         this->height = rhs.height;
         this->polyline = std::move(rhs.polyline);
+        this->inset_idx = rhs.inset_idx;
         return *this;
     }
 
@@ -329,21 +339,32 @@ public:
     ExtrusionPaths paths;
 
     ExtrusionMultiPath() {}
-    ExtrusionMultiPath(const ExtrusionMultiPath &rhs) : paths(rhs.paths), m_can_reverse(rhs.m_can_reverse) {}
-    ExtrusionMultiPath(ExtrusionMultiPath &&rhs) : paths(std::move(rhs.paths)), m_can_reverse(rhs.m_can_reverse) {}
-    ExtrusionMultiPath(const ExtrusionPaths &paths) : paths(paths) {}
-    ExtrusionMultiPath(const ExtrusionPath &path) {this->paths.push_back(path); m_can_reverse = path.can_reverse(); }
+    ExtrusionMultiPath(const ExtrusionMultiPath &rhs) : ExtrusionEntity(rhs), paths(rhs.paths), m_can_reverse(rhs.m_can_reverse) {}
+    ExtrusionMultiPath(ExtrusionMultiPath &&rhs) : ExtrusionEntity(rhs), paths(std::move(rhs.paths)), m_can_reverse(rhs.m_can_reverse) {}
+    ExtrusionMultiPath(const ExtrusionPaths &paths) : paths(paths)
+    {
+        if (!paths.empty())
+            this->inset_idx = paths.front().inset_idx;
+    }
+    ExtrusionMultiPath(const ExtrusionPath &path)
+    {
+        this->paths.push_back(path);
+        this->inset_idx = path.inset_idx;
+        m_can_reverse = path.can_reverse();
+    }
 
     ExtrusionMultiPath &operator=(const ExtrusionMultiPath &rhs)
     {
-        this->paths   = rhs.paths;
-        m_can_reverse = rhs.m_can_reverse;
+        this->paths     = rhs.paths;
+        this->inset_idx = rhs.inset_idx;
+        m_can_reverse   = rhs.m_can_reverse;
         return *this;
     }
     ExtrusionMultiPath &operator=(ExtrusionMultiPath &&rhs)
     {
-        this->paths   = std::move(rhs.paths);
-        m_can_reverse = rhs.m_can_reverse;
+        this->paths     = std::move(rhs.paths);
+        this->inset_idx = rhs.inset_idx;
+        m_can_reverse   = rhs.m_can_reverse;
         return *this;
     }
 
@@ -394,12 +415,27 @@ public:
     ExtrusionPaths paths;
 
     ExtrusionLoop(ExtrusionLoopRole role = elrDefault) : m_loop_role(role) {}
-    ExtrusionLoop(const ExtrusionPaths &paths, ExtrusionLoopRole role = elrDefault) : paths(paths), m_loop_role(role) {}
-    ExtrusionLoop(ExtrusionPaths &&paths, ExtrusionLoopRole role = elrDefault) : paths(std::move(paths)), m_loop_role(role) {}
+    ExtrusionLoop(const ExtrusionPaths &paths, ExtrusionLoopRole role = elrDefault) : paths(paths), m_loop_role(role)
+    {
+        if (!paths.empty())
+            this->inset_idx = paths.front().inset_idx;
+    }
+    ExtrusionLoop(ExtrusionPaths &&paths, ExtrusionLoopRole role = elrDefault) : paths(std::move(paths)), m_loop_role(role)
+    {
+        if (!this->paths.empty())
+            this->inset_idx = this->paths.front().inset_idx;
+    }
     ExtrusionLoop(const ExtrusionPath &path, ExtrusionLoopRole role = elrDefault) : m_loop_role(role)
-        { this->paths.push_back(path); }
+    {
+        this->paths.push_back(path);
+        this->inset_idx = path.inset_idx;
+    }
     ExtrusionLoop(const ExtrusionPath &&path, ExtrusionLoopRole role = elrDefault) : m_loop_role(role)
-        { this->paths.emplace_back(std::move(path)); }
+    {
+        this->paths.emplace_back(std::move(path));
+        if (!this->paths.empty())
+            this->inset_idx = this->paths.front().inset_idx;
+    }
     bool is_loop() const override{ return true; }
     bool can_reverse() const override { return false; }
 	ExtrusionEntity* clone() const override{ return new ExtrusionLoop (*this); }
@@ -607,6 +643,31 @@ inline void extrusion_entities_append_loops_and_paths(ExtrusionEntitiesPtr &dst,
         }
     }
     polylines.clear();
+}
+
+// Detach ExtrusionLoop entities out of the list, keeping their relative order.
+// Ownership of the detached entities moves to loops_out.
+inline void detach_extrusion_loops(ExtrusionEntitiesPtr &entities, ExtrusionEntitiesPtr &loops_out)
+{
+    for (auto it = entities.begin(); it != entities.end();) {
+        if ((*it)->is_loop()) {
+            loops_out.emplace_back(*it);
+            it = entities.erase(it);
+        } else {
+            ++ it;
+        }
+    }
+}
+
+// Put entities back in front of the list, keeping their relative order.
+// Ownership of the inserted entities moves to entities. Self-assignment
+// (entities == front) is a no-op, inserting a range into itself is UB.
+inline void prepend_extrusion_entities(ExtrusionEntitiesPtr &entities, ExtrusionEntitiesPtr &&front)
+{
+    if (! front.empty() && &entities != &front) {
+        entities.insert(entities.begin(), front.begin(), front.end());
+        front.clear();
+    }
 }
 
 }

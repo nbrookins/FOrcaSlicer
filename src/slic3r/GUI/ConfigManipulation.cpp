@@ -125,22 +125,42 @@ void ConfigManipulation::check_nozzle_temperature_initial_layer_range(DynamicPri
 
 void ConfigManipulation::check_filament_max_volumetric_speed(DynamicPrintConfig *config)
 {
-    //if (is_msg_dlg_already_exist) return;
-    //float max_volumetric_speed = config->opt_float("filament_max_volumetric_speed");
+    auto *max_speeds = config->option<ConfigOptionFloats>("filament_max_volumetric_speed");
+    if (max_speeds == nullptr || max_speeds->values.empty())
+        return;
 
-    float max_volumetric_speed = config->has("filament_max_volumetric_speed") ? config->opt_float("filament_max_volumetric_speed", (float) 0.5) : 0.5;
-    // BBS: limite the min max_volumetric_speed
-    if (max_volumetric_speed < 0.5) {
-        const wxString     msg_text = _(L("Too small max volumetric speed.\nReset to 0.5."));
-        MessageDialog      dialog(nullptr, msg_text, "", wxICON_WARNING | wxOK);
+    size_t variant_count = max_speeds->values.size();
+    if (const auto *flow_support = config->option<ConfigOptionStrings>("filament_flow_support");
+        flow_support != nullptr && !flow_support->values.empty())
+        variant_count = std::max(variant_count, flow_support->values.size());
+
+    ConfigOptionFloats corrected = *max_speeds;
+    const double fallback = corrected.values.front();
+    corrected.resize(variant_count);
+    for (size_t idx = max_speeds->values.size(); idx < variant_count; ++idx)
+        corrected.values[idx] = fallback;
+    bool needs_correction = corrected.values.size() != max_speeds->values.size();
+    bool has_invalid_value = false;
+    for (size_t idx = 0; idx < variant_count; ++idx) {
+        if (corrected.get_at(idx) < 0.5) {
+            corrected.values[idx] = 0.5;
+            needs_correction = true;
+            has_invalid_value = true;
+        }
+    }
+
+    if (needs_correction) {
         DynamicPrintConfig new_conf = *config;
-        is_msg_dlg_already_exist    = true;
-        dialog.ShowModal();
-        new_conf.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats({0.5}));
+        if (has_invalid_value) {
+            const wxString msg_text = _(L("Too small max volumetric speed.\nReset to 0.5."));
+            MessageDialog  dialog(nullptr, msg_text, "", wxICON_WARNING | wxOK);
+            is_msg_dlg_already_exist = true;
+            dialog.ShowModal();
+        }
+        new_conf.set_key_value("filament_max_volumetric_speed", corrected.clone());
         apply(config, &new_conf);
         is_msg_dlg_already_exist = false;
     }
-
 }
 
 void ConfigManipulation::check_chamber_temperature(DynamicPrintConfig* config)
@@ -490,6 +510,43 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
         }
     }
 
+    if (config->option<ConfigOptionPercent>("sparse_infill_density")->value == 100) {
+        std::string  sparse_infill_pattern = config->option<ConfigOptionEnum<InfillPattern>>("sparse_infill_pattern")->serialize();
+        const auto& top_fill_pattern_values = config->def()->get("top_surface_pattern")->enum_values;
+        bool correct_100p_fill = std::find(top_fill_pattern_values.begin(), top_fill_pattern_values.end(), sparse_infill_pattern) != top_fill_pattern_values.end();
+        if (!correct_100p_fill) {
+            // get sparse_infill_pattern name from enum_labels for using this one at dialog_msg
+            const ConfigOptionDef* fill_pattern_def = config->def()->get("sparse_infill_pattern");
+            assert(fill_pattern_def != nullptr);
+            auto it_pattern = std::find(fill_pattern_def->enum_values.begin(), fill_pattern_def->enum_values.end(), sparse_infill_pattern);
+            assert(it_pattern != fill_pattern_def->enum_values.end());
+            if (it_pattern != fill_pattern_def->enum_values.end()) {
+                wxString msg_text = GUI::format_wxstr(_L("%1% infill pattern doesn't support 100%% density."),
+                    _(fill_pattern_def->enum_labels[it_pattern - fill_pattern_def->enum_values.begin()]));
+                if (is_global_config)
+                    msg_text += "\n" + _L("Switch to rectilinear pattern?\n"
+                        "Yes - switch to rectilinear pattern automatically\n"
+                        "No  - reset density to default non 100% value automatically") + "\n";
+                MessageDialog dialog(m_msg_dlg_parent, msg_text, "",
+                    wxICON_WARNING | (is_global_config ? wxYES | wxNO : wxOK));
+                DynamicPrintConfig new_conf = *config;
+                is_msg_dlg_already_exist = true;
+                auto answer = dialog.ShowModal();
+                if (is_object_config || answer == wxID_YES) {
+                    new_conf.set_key_value("sparse_infill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+                    sparse_infill_density = 100;
+                }
+                else
+                    sparse_infill_density = wxGetApp().preset_bundle->prints.get_selected_preset().config.option<ConfigOptionPercent>("sparse_infill_density")->value;
+                new_conf.set_key_value("sparse_infill_density", new ConfigOptionPercent(sparse_infill_density));
+                apply(config, &new_conf);
+                if (cb_value_change)
+                    cb_value_change("sparse_infill_density", sparse_infill_density);
+                is_msg_dlg_already_exist = false;
+            }
+        }
+    }
+
     // BBS
     // FOS: under mixed nozzle sizes 0 no longer means "Default" (use whichever tool is mounted) -
     // that choice is unsound because support geometry is baked at slicing time with a single flow.
@@ -579,21 +636,29 @@ void ConfigManipulation::apply_null_fff_config(DynamicPrintConfig *config, std::
     }
 }
 
-void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, const bool is_global_config)
+void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, const bool is_global_config, size_t flow_variant_index)
 {
     PresetBundle *preset_bundle  = wxGetApp().preset_bundle;
 
     auto gcflavor = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value;
+    const bool bSEMM = preset_bundle->printers.get_edited_preset().config.opt_bool("single_extruder_multi_material");
 
-    bool have_volumetric_extrusion_rate_slope = config->option<ConfigOptionFloat>("max_volumetric_extrusion_rate_slope")->value > 0;
-    float have_volumetric_extrusion_rate_slope_segment_length = config->option<ConfigOptionFloat>("max_volumetric_extrusion_rate_slope_segment_length")->value;
+    auto process_flow_float = [config, flow_variant_index](const char *key, double fallback) {
+        const auto *option = config->option<ConfigOptionFloats>(key);
+        if (option == nullptr || option->values.empty())
+            return fallback;
+        return option->get_at(std::min(flow_variant_index, option->values.size() - 1));
+    };
+
+    bool have_volumetric_extrusion_rate_slope = process_flow_float("max_volumetric_extrusion_rate_slope", 0) > 0;
+    float have_volumetric_extrusion_rate_slope_segment_length = process_flow_float("max_volumetric_extrusion_rate_slope_segment_length", 0);
     toggle_field("enable_arc_fitting", !have_volumetric_extrusion_rate_slope);
     toggle_line("max_volumetric_extrusion_rate_slope_segment_length", have_volumetric_extrusion_rate_slope);
     toggle_line("extrusion_rate_smoothing_external_perimeter_only", have_volumetric_extrusion_rate_slope);
     if(have_volumetric_extrusion_rate_slope) config->set_key_value("enable_arc_fitting", new ConfigOptionBool(false));
     if(have_volumetric_extrusion_rate_slope_segment_length < 0.5) {
         DynamicPrintConfig new_conf = *config;
-        new_conf.set_key_value("max_volumetric_extrusion_rate_slope_segment_length", new ConfigOptionFloat(1));
+        new_conf.set_key_value("max_volumetric_extrusion_rate_slope_segment_length", new ConfigOptionFloats { 1. });
         apply(config, &new_conf);
     }
 
@@ -606,7 +671,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament uses the same logic as in Print::extruders()
     for (auto el : { "sparse_infill_pattern", "infill_combination",
-        "minimum_sparse_infill_area", "sparse_infill_filament", "infill_anchor_max","infill_shift_step","sparse_infill_rotate_template","symmetric_infill_y_axis"})
+        "minimum_sparse_infill_area", "infill_anchor_max","infill_shift_step","sparse_infill_rotate_template","symmetric_infill_y_axis"})
         toggle_line(el, have_infill);
 
     bool have_combined_infill = config->opt_bool("infill_combination") && have_infill;
@@ -676,15 +741,16 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     for (auto el : { "top_surface_line_width", "top_surface_speed" })
         toggle_field(el, has_top_shell);
 
-    bool have_default_acceleration = config->opt_float("default_acceleration") > 0;
+    bool have_default_acceleration = process_flow_float("default_acceleration", 0) > 0;
 
     for (auto el : {"outer_wall_acceleration", "inner_wall_acceleration", "initial_layer_acceleration",
-        "top_surface_acceleration", "travel_acceleration", "bridge_acceleration", "sparse_infill_acceleration", "internal_solid_infill_acceleration"})
+        "top_surface_acceleration", "travel_acceleration", "first_layer_travel_acceleration",
+        "bridge_acceleration", "sparse_infill_acceleration", "internal_solid_infill_acceleration"})
         toggle_field(el, have_default_acceleration);
 
-    bool have_default_jerk = config->opt_float("default_jerk") > 0;
+    bool have_default_jerk = process_flow_float("default_jerk", 0) > 0;
 
-    for (auto el : { "outer_wall_jerk", "inner_wall_jerk", "initial_layer_jerk", "top_surface_jerk", "travel_jerk", "infill_jerk"})
+    for (auto el : { "outer_wall_jerk", "inner_wall_jerk", "initial_layer_jerk", "top_surface_jerk", "travel_jerk", "first_layer_travel_jerk", "infill_jerk"})
         toggle_field(el, have_default_jerk);
 
     toggle_line("default_junction_deviation", gcflavor == gcfMarlinFirmware);
@@ -727,7 +793,8 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
         "support_interface_pattern", "support_interface_top_layers", "support_interface_bottom_layers",
         "bridge_no_support", "max_bridge_length", "support_top_z_distance", "support_bottom_z_distance",
         "support_type", "support_on_build_plate_only", "support_critical_regions_only", "support_interface_not_for_body",
-        "support_object_xy_distance", "support_object_first_layer_gap"/*, "independent_support_layer_height"*/})
+        "support_object_xy_distance", "support_object_first_layer_gap",
+        "support_interface_min_area"/*, "independent_support_layer_height"*/})
         toggle_field(el, have_support_material);
     toggle_field("support_threshold_angle", have_support_material && is_auto(support_type));
     toggle_field("support_threshold_overlap", config->opt_int("support_threshold_angle") == 0 && have_support_material && is_auto(support_type));
@@ -749,9 +816,9 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
         toggle_line(el, support_is_organic);
 
     toggle_field("tree_support_brim_width", support_is_tree && !config->opt_bool("tree_support_auto_brim"));
-    // non-organic tree support use max_bridge_length instead of bridge_no_support
-    toggle_line("max_bridge_length", support_is_normal_tree);
-    toggle_line("bridge_no_support", !support_is_normal_tree);
+    // tree support use max_bridge_length instead of bridge_no_support
+    toggle_line("max_bridge_length", support_is_tree);
+    toggle_line("bridge_no_support", !support_is_tree);
     toggle_line("support_critical_regions_only", is_auto(support_type) && support_is_tree);
 
     for (auto el : { "support_interface_filament",
@@ -780,8 +847,10 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     toggle_line("raft_contact_distance", have_raft && !have_support_soluble);
 
     // Orca: Raft, grid, snug and organic supports use these two parameters to control the size & density of the "brim"/flange
-    for (auto el : { "raft_first_layer_expansion", "raft_first_layer_density"})
-        toggle_field(el, have_support_material && !(support_is_normal_tree && !have_raft));
+    // raft_first_layer_expansion also drives the no-raft normal-tree first-layer expansion
+    // (aligned with BambuStudio), so keep it editable whenever support is enabled, raft or not.
+    toggle_field("raft_first_layer_expansion", have_support_material);
+    toggle_field("raft_first_layer_density", have_support_material && !(support_is_normal_tree && !have_raft));
 
     bool has_ironing = (config->opt_enum<IroningType>("ironing_type") != IroningType::NoIroning);
     for (auto el : { "ironing_pattern", "ironing_flow", "ironing_spacing", "ironing_angle", "ironing_inset"})
@@ -795,8 +864,6 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     toggle_field("print_order", !have_sequential_printing);
 
     toggle_field("single_extruder_multi_material", !is_BBL_Printer);
-
-    auto bSEMM = preset_bundle->printers.get_edited_preset().config.opt_bool("single_extruder_multi_material");
 
     toggle_field("ooze_prevention", !bSEMM);
     bool have_ooze_prevention = config->opt_bool("ooze_prevention");
@@ -812,9 +879,15 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     for (auto el : {"wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament", "wipe_tower_filament"})
         toggle_line(el, !bSEMM);
 
+    std::string printer_model = wxGetApp().preset_bundle->printers.get_edited_preset().config.opt_string("printer_model");
+    bool is_tower_interface_supported = printer_model.find("Snapmaker U1") != std::string::npos;
+    toggle_line("enable_tower_interface_features", have_prime_tower && is_tower_interface_supported);
+    toggle_line("enable_tower_interface_cooldown_during_tower",
+                have_prime_tower && is_tower_interface_supported && config->opt_bool("enable_tower_interface_features"));
+
     bool purge_in_primetower = preset_bundle->printers.get_edited_preset().config.opt_bool("purge_in_prime_tower");
 
-    for (auto el : {"wipe_tower_rotation_angle", "wipe_tower_cone_angle",
+    for (auto el : {"wipe_tower_cone_angle",
                     "wipe_tower_extra_spacing", "wipe_tower_max_purge_speed",
                     "wipe_tower_wall_type",
                     "wipe_tower_extra_rib_length","wipe_tower_rib_width","wipe_tower_fillet_wall",
@@ -822,12 +895,25 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
                     "wipe_tower_no_sparse_layers"})
       toggle_line(el, have_prime_tower && !is_BBL_Printer);
 
+    const bool local_z_dithering_enabled =
+        config->has("dithering_local_z_mode") && config->option("dithering_local_z_mode") != nullptr &&
+        config->opt_bool("dithering_local_z_mode");
+    toggle_line("dithering_local_z_whole_objects", local_z_dithering_enabled);
+    toggle_line("dithering_local_z_infill", local_z_dithering_enabled);
+    toggle_line("dithering_local_z_direct_multicolor", local_z_dithering_enabled);
+
     WipeTowerWallType wipe_tower_wall_type = config->opt_enum<WipeTowerWallType>("wipe_tower_wall_type");
     toggle_line("wipe_tower_cone_angle", have_prime_tower && !is_BBL_Printer && wipe_tower_wall_type == WipeTowerWallType::wtwCone);
     toggle_line("wipe_tower_extra_rib_length", have_prime_tower && !is_BBL_Printer && wipe_tower_wall_type == WipeTowerWallType::wtwRib);
     toggle_line("wipe_tower_rib_width", have_prime_tower && !is_BBL_Printer && wipe_tower_wall_type == WipeTowerWallType::wtwRib);
     toggle_line("wipe_tower_fillet_wall", have_prime_tower && !is_BBL_Printer && wipe_tower_wall_type == WipeTowerWallType::wtwRib);
     
+    toggle_field("prime_tower_width", have_prime_tower && wipe_tower_wall_type != WipeTowerWallType::wtwRib);
+
+    toggle_line("wipe_tower_wall_gap", have_prime_tower);
+    toggle_line("prime_tower_enable_framework", have_prime_tower);
+    toggle_line("prime_tower_brim_chamfer_max_width", have_prime_tower);
+    toggle_line("prime_tower_brim_chamfer", have_prime_tower);
 
     toggle_line("single_extruder_multi_material_priming", !bSEMM && have_prime_tower && !is_BBL_Printer);
 
@@ -836,13 +922,10 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     for (auto el : {"flush_into_infill", "flush_into_support", "flush_into_objects"})
         toggle_field(el, have_prime_tower);
 
-    // BBS: MusangKing - Hide "Independent support layer height" option
-    toggle_line("independent_support_layer_height", have_support_material && !have_prime_tower);
-
     bool have_avoid_crossing_perimeters = config->opt_bool("reduce_crossing_wall");
     toggle_line("max_travel_detour_distance", have_avoid_crossing_perimeters);
 
-    bool has_overhang_speed = config->opt_bool("enable_overhang_speed");
+    bool has_overhang_speed = config->opt_bool("enable_overhang_speed", 0);
     for (auto el : {"overhang_1_4_speed", "overhang_2_4_speed", "overhang_3_4_speed", "overhang_4_4_speed"})
         toggle_line(el, has_overhang_speed);
 
@@ -870,7 +953,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     for (auto el : {"accel_to_decel_enable", "accel_to_decel_factor"})
         toggle_line(el, gcflavor == gcfKlipper);
     if(gcflavor == gcfKlipper)
-        toggle_field("accel_to_decel_factor", config->opt_bool("accel_to_decel_enable"));
+        toggle_field("accel_to_decel_factor", config->opt_bool("accel_to_decel_enable", 0));
 
     bool have_make_overhang_printable = config->opt_bool("make_overhang_printable");
     toggle_line("make_overhang_printable_angle", have_make_overhang_printable);

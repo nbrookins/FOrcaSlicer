@@ -1,18 +1,16 @@
 #include "PrintConfig.hpp"
+#include "ProjectSchemaVersion.hpp"
 #include "ClipperUtils.hpp"
 #include "Config.hpp"
-#include "I18N.hpp"
 #include "format.hpp"
+#include "I18N.hpp"
 
 #include "GCode/Thumbnails.hpp"
 #include <set>
-#include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/format.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/log/trivial.hpp>
-#include <boost/thread.hpp>
-#include <float.h>
 
 namespace {
 std::set<std::string> SplitStringAndRemoveDuplicateElement(const std::string &str, const std::string &separator)
@@ -480,6 +478,13 @@ static const t_config_enum_values s_keys_map_WipeTowerWallType{
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerWallType)
 
+// Snapmaker: flow-variant
+static const t_config_enum_values s_keys_map_FilamentVolumeType = {
+    { FLOW_MODE_STANDARD,   fvtStandard },
+    { FLOW_MODE_HIGH_FLOW,  fvtHighFlow },
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(FilamentVolumeType)
+
 static void assign_printer_technology_to_unknown(t_optiondef_map &options, PrinterTechnology printer_technology)
 {
     for (std::pair<const t_config_option_key, ConfigOptionDef> &kvp : options)
@@ -719,7 +724,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("supertack_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the Cool Plate SuperTack.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -729,7 +734,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("cool_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the Cool Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -739,7 +744,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("textured_cool_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the Textured Cool Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -749,7 +754,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("eng_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the Engineering Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -759,7 +764,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("hot_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the High Temp Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -769,7 +774,7 @@ void PrintConfigDef::init_fff_params()
     def = this->add("textured_plate_temp", coInts);
     def->label = L("Other layers");
     def->tooltip = L("Bed temperature for layers except the initial one. "
-                     "A value of 0 means the filament does not support printing on the Textured PEI Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min = 0;
@@ -779,7 +784,7 @@ void PrintConfigDef::init_fff_params()
     def             = this->add("graphic_effect_plate_temp", coInts);
     def->label      = L("Other layers");
     def->tooltip    = L("Bed temperature for layers except the initial one. "
-                           "A value of 0 means the filament does not support printing on the Graphic Effect Plate.");
+                           "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext   = u8"\u2103" /* °C */; // degrees Celsius, don't need translation
     def->full_label = L("Bed temperature");
     def->min        = 0;
@@ -790,7 +795,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the Cool Plate SuperTack.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->min = 0;
     def->max = 120;
@@ -800,7 +805,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the Cool Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->min = 0;
     def->max = 120;
@@ -810,7 +815,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the Textured Cool Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->min = 0;
     def->max = 120;
@@ -820,7 +825,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the Engineering Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->min = 0;
     def->max = 300;
@@ -830,7 +835,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the High Temp Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->max = 300;
     def->set_default_value(new ConfigOptionInts{ 45 });
@@ -839,7 +844,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip = L("Bed temperature of the initial layer. "
-                     "A value of 0 means the filament does not support printing on the Textured PEI Plate.");
+                     "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext = u8"\u2103" /* °C */;	// degrees Celsius, don't need translation
     def->min = 0;
     def->max = 300;
@@ -849,7 +854,7 @@ void PrintConfigDef::init_fff_params()
     def->label      = L("Initial layer");
     def->full_label = L("Initial layer bed temperature");
     def->tooltip    = L("Bed temperature of the initial layer. "
-                           "A value of 0 means the filament does not support printing on the Graphic Effect Plate.");
+                           "A value of 0 means the filament does not support printing on this plate.");
     def->sidetext   = u8"\u2103" /* °C */; // degrees Celsius, don't need translation
     def->min        = 0;
     def->max        = 300;
@@ -893,7 +898,7 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels_ex.emplace_back(L("Smooth PEI Plate"));
     def->enum_labels_ex.emplace_back(L("Textured PEI Plate"));
     def->enum_labels_ex.emplace_back(L("Textured Cool Plate"));
-    def->enum_labels_ex.emplace_back(L("Cool Plate (SuperTack)"));
+    def->enum_labels_ex.emplace_back(L("Cool Steel Plate"));
     def->enum_labels_ex.emplace_back(L("Graphic Effect Plate"));
     def->set_default_value(new ConfigOptionEnum<BedType>(btPC));
 
@@ -974,6 +979,15 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = "mm";	// milimeters, don't need translation
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(0.));
+
+    // Migrated from BambuStudio c782fbb8; same default/clamp policy as the top key.
+    def = this->add("bottom_color_penetration_layers", coInt);
+    def->label = L("Bottom paint penetration layers");
+    def->category = L("Strength");
+    def->sidetext = L("layers");
+    def->tooltip = L("This is the number of layers of bottom paint penetration.");
+    def->min = 0;
+    def->set_default_value(new ConfigOptionInt(3));
 
     def = this->add("gap_fill_target", coEnum);
     def->label = L("Apply gap fill");
@@ -1074,12 +1088,15 @@ void PrintConfigDef::init_fff_params()
     def = this->add("bridge_density", coPercent);
     def->label = L("External bridge density");
     def->category = L("Strength");
-    def->tooltip = L("Controls the density (spacing) of external bridge lines. 100% means solid bridge. Default is 100%.\n\n"
+    def->tooltip = L("Controls the density (spacing) of external bridge lines. Default is 100%.\n\n"
                      "Lower density external bridges can help improve reliability as there is more space for air to circulate "
-                     "around the extruded bridge, improving its cooling speed.");
+                     "around the extruded bridge, improving its cooling speed. Minimum is 10%.\n\n"
+                     "Higher densities can produce smoother bridge surfaces, as overlapping lines provide "
+                     "additional support during printing. Maximum is 120%. \n"
+                     "Note: Bridge density that is too high can cause warping or overextrusion.");
     def->sidetext = "%";
     def->min = 10;
-    def->max = 100;
+    def->max = 120;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionPercent(100));
 
@@ -1235,14 +1252,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(50, true));
 
-    def = this->add("enable_overhang_speed", coBool);
+    def = this->add("enable_overhang_speed", coBools);
     def->label = L("Slow down for overhang");
     def->category = L("Speed");
     def->tooltip = L("Enable this option to slow printing down for different overhang degree.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool{ true });
+    def->set_default_value(new ConfigOptionBools{ true });
     
-    def = this->add("slowdown_for_curled_perimeters", coBool);
+    def = this->add("slowdown_for_curled_perimeters", coBools);
     def->label = L("Slow down for curled perimeters");
     def->category = L("Speed");
     // xgettext:no-c-format, no-boost-format
@@ -1257,9 +1274,9 @@ void PrintConfigDef::init_fff_params()
                      "applied even if the overhanging perimeter is part of a bridge. For example, when the perimeters are 100% overhanging"
                      ", with no wall supporting them from underneath, the 100% overhang speed will be applied.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool{ true });
+    def->set_default_value(new ConfigOptionBools{ true });
 
-    def = this->add("overhang_1_4_speed", coFloatOrPercent);
+    def = this->add("overhang_1_4_speed", coFloatsOrPercents);
     def->label = "(10%, 25%)";
     def->category = L("Speed");
     def->full_label = "(10%, 25%)";
@@ -1269,9 +1286,9 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{0., false} });
 
-    def = this->add("overhang_2_4_speed", coFloatOrPercent);
+    def = this->add("overhang_2_4_speed", coFloatsOrPercents);
     def->label = "[25%, 50%)";
     def->category = L("Speed");
     def->full_label = "[25%, 50%)";
@@ -1281,9 +1298,9 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{0., false} });
 
-    def = this->add("overhang_3_4_speed", coFloatOrPercent);
+    def = this->add("overhang_3_4_speed", coFloatsOrPercents);
     def->label = "[50%, 75%)";
     def->category = L("Speed");
     def->full_label = "[50%, 75%)";
@@ -1293,9 +1310,9 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{0., false} });
 
-    def = this->add("overhang_4_4_speed", coFloatOrPercent);
+    def = this->add("overhang_4_4_speed", coFloatsOrPercents);
     def->label = "[75%, 100%)";
     def->category = L("Speed");
     def->full_label = "[75%, 100%)";
@@ -1305,9 +1322,9 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{0., false} });
 
-    def = this->add("bridge_speed", coFloat);
+    def = this->add("bridge_speed", coFloats);
     def->label = L("External");
     def->category = L("Speed");
     def->tooltip = L("Speed of the externally visible bridge extrusions.\n\n"
@@ -1317,9 +1334,9 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(25));
+    def->set_default_value(new ConfigOptionFloats { 25. });
 
-    def = this->add("internal_bridge_speed", coFloatOrPercent);
+    def = this->add("internal_bridge_speed", coFloatsOrPercents);
     def->label = L("Internal");
     def->category = L("Speed");
     def->tooltip = L("Speed of internal bridges. If the value is expressed as a percentage, it will be calculated based on the bridge_speed. Default value is 150%.");
@@ -1327,7 +1344,7 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "bridge_speed";
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(150, true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{150., true} });
 
     def = this->add("brim_width", coFloat);
     def->label = L("Brim width");
@@ -1486,13 +1503,13 @@ void PrintConfigDef::init_fff_params()
                      "This can improve the cooling quality for needle and small details.");
     def->set_default_value(new ConfigOptionBools { true });
 
-    def = this->add("default_acceleration", coFloat);
+    def = this->add("default_acceleration", coFloats);
     def->label = L("Normal printing");
     def->tooltip = L("The default acceleration of both normal printing and travel except initial layer.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(500.0));
+    def->set_default_value(new ConfigOptionFloats { 500.0 });
 
     def = this->add("default_filament_profile", coStrings);
     def->label = L("Default filament profile");
@@ -1631,7 +1648,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = "mm";	// milimeters, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(10));
+    def->set_default_value(new ConfigOptionFloat(0));
 
     def = this->add("machine_end_gcode", coString);
     def->label = L("End G-code");
@@ -1732,7 +1749,7 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(0., false));
 
-    def = this->add("outer_wall_speed", coFloat);
+    def = this->add("outer_wall_speed", coFloats);
     def->label = L("Outer wall");
     def->category = L("Speed");
     def->tooltip = L("Speed of outer wall which is outermost and visible. "
@@ -1740,9 +1757,9 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(60));
+    def->set_default_value(new ConfigOptionFloats { 60. });
 
-    def = this->add("small_perimeter_speed", coFloatOrPercent);
+    def = this->add("small_perimeter_speed", coFloatsOrPercents);
     def->label = L("Small perimeters");
     def->category = L("Speed");
     def->tooltip = L("This separate setting will affect the speed of perimeters having radius <= small_perimeter_threshold "
@@ -1752,16 +1769,16 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "outer_wall_speed";
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(50, true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{50., true} });
 
-    def = this->add("small_perimeter_threshold", coFloat);
+    def = this->add("small_perimeter_threshold", coFloats);
     def->label = L("Small perimeters threshold");
     def->category = L("Speed");
     def->tooltip = L("This sets the threshold for small perimeter length. Default threshold is 0mm.");
     def->sidetext = "mm";	// milimeters, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(0));
+    def->set_default_value(new ConfigOptionFloats { 0. });
 
     def = this->add("wall_sequence", coEnum);
     def->label = L("Walls printing order");
@@ -1922,6 +1939,7 @@ void PrintConfigDef::init_fff_params()
                      "This setting changes all extrusion flow of this filament in G-code proportionally. "
                      "The recommended value range is between 0.95 and 1.05. "
                      "You may be able to tune this value to get a nice flat surface if there is slight overflow or underflow.");
+    def->min = 0;
     def->max = 2;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloats { 1. });
@@ -2068,6 +2086,22 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.f));
+
+    def = this->add("filament_multi_colors", coStrings);
+    def->label = L("Filament multi colors");
+    def->tooltip = L("Serialized filament color sequence. Multiple colors are separated by '|'.");
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionStrings{ "" });
+
+    def = this->add("filament_colour_mode", coInts);
+    def->label = L("Filament color display mode");
+    def->tooltip = L("Filament color display mode: 0 for split colors, 1 for vertical gradient.");
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->min = 0;
+    def->max = 1;
+    def->set_default_value(new ConfigOptionInts{ 0 });
 
     def           = this->add("thumb0", coStrings);
     def->label    = L("small thumb");
@@ -2290,6 +2324,30 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloats { 0. });
 
+    def = this->add("filament_tower_interface_pre_extrusion_dist", coFloats);
+    def->label = L("Interface layer pre-extrusion distance");
+    def->tooltip = L("Pre-extrusion distance for prime tower interface layer (where different materials meet).");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloats { 10. });
+
+    def = this->add("filament_tower_interface_pre_extrusion_length", coFloats);
+    def->label = L("Interface layer pre-extrusion length");
+    def->tooltip = L("Pre-extrusion length for prime tower interface layer (where different materials meet).");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloats { 0. });
+
+    def = this->add("filament_tower_interface_print_temp", coInts);
+    def->label = L("Interface layer print temperature");
+    def->tooltip = L("Print temperature for prime tower interface layer (where different materials meet). If set to -1, use max recommended nozzle temperature.");
+    def->sidetext = L("°C");
+    def->min = -1;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionInts { -1 });
+
     def = this->add("filament_cooling_initial_speed", coFloats);
     def->label = L("Speed of the first cooling move");
     def->tooltip = L("Cooling moves are gradually accelerating beginning at this speed.");
@@ -2415,6 +2473,12 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Support material is commonly used to print supports and support interfaces.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBools { false });
+
+    def          = this->add("filament_is_high_temperature", coBools);
+    def->label   = L("Is high-temperature filament");
+    def->tooltip = L("Indicates whether this is a high-temperature filament that requires elevated printing temperatures.");
+    def->mode    = comSimple;
+    def->set_default_value(new ConfigOptionBools{false});
 
     // BBS
     def = this->add("temperature_vitrification", coInts);
@@ -2642,159 +2706,177 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(20, false));
 
-    def = this->add("outer_wall_acceleration", coFloat);
+    def = this->add("outer_wall_acceleration", coFloats);
     def->label = L("Outer wall");
     def->tooltip = L("Acceleration of outer walls.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(10000));
+    def->set_default_value(new ConfigOptionFloats { 10000. });
 
-    def = this->add("inner_wall_acceleration", coFloat);
+    def = this->add("inner_wall_acceleration", coFloats);
     def->label = L("Inner wall");
     def->tooltip = L("Acceleration of inner walls.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(10000));
+    def->set_default_value(new ConfigOptionFloats { 10000. });
 
-    def = this->add("travel_acceleration", coFloat);
+    def = this->add("travel_acceleration", coFloats);
     def->label = L("Travel");
     def->tooltip = L("Acceleration of travel moves.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(10000));
+    def->set_default_value(new ConfigOptionFloats { 10000. });
 
-    def = this->add("top_surface_acceleration", coFloat);
+    def = this->add("top_surface_acceleration", coFloats);
     def->label = L("Top surface");
     def->tooltip = L("Acceleration of top surface infill. Using a lower value may improve top surface quality.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(500));
+    def->set_default_value(new ConfigOptionFloats { 500. });
 
-    def = this->add("outer_wall_acceleration", coFloat);
+    def = this->add("outer_wall_acceleration", coFloats);
     def->label = L("Outer wall");
     def->tooltip = L("Acceleration of outer wall. Using a lower value can improve quality.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(500));
+    def->set_default_value(new ConfigOptionFloats { 500. });
 
-    def = this->add("bridge_acceleration", coFloatOrPercent);
+    def = this->add("bridge_acceleration", coFloatsOrPercents);
     def->label = L("Bridge");
     def->tooltip = L("Acceleration of bridges. If the value is expressed as a percentage (e.g. 50%), it will be calculated based on the outer wall acceleration.");
     def->sidetext = L("mm/s² or %");
     def->min = 0;
     def->mode = comAdvanced;
     def->ratio_over = "outer_wall_acceleration";
-    def->set_default_value(new ConfigOptionFloatOrPercent(50,true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{50., true} });
 
-    def = this->add("sparse_infill_acceleration", coFloatOrPercent);
+    def = this->add("sparse_infill_acceleration", coFloatsOrPercents);
     def->label = L("Sparse infill");
     def->tooltip = L("Acceleration of sparse infill. If the value is expressed as a percentage (e.g. 100%), it will be calculated based on the default acceleration.");
     def->sidetext = L("mm/s² or %");
     def->min = 0;
     def->mode = comAdvanced;
     def->ratio_over = "default_acceleration";
-    def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{100., true} });
 
-    def = this->add("internal_solid_infill_acceleration", coFloatOrPercent);
+    def = this->add("internal_solid_infill_acceleration", coFloatsOrPercents);
     def->label = L("Internal solid infill");
     def->tooltip = L("Acceleration of internal solid infill. If the value is expressed as a percentage (e.g. 100%), it will be calculated based on the default acceleration.");
     def->sidetext = L("mm/s² or %");
     def->min = 0;
     def->mode = comAdvanced;
     def->ratio_over = "default_acceleration";
-    def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{100., true} });
 
-    def = this->add("initial_layer_acceleration", coFloat);
+    def = this->add("initial_layer_acceleration", coFloats);
     def->label = L("Initial layer");
     def->tooltip = L("Acceleration of initial layer. Using a lower value can improve build plate adhesion.");
     def->sidetext = u8"mm/s²";	// milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(300));
+    def->set_default_value(new ConfigOptionFloats { 300. });
 
-    def = this->add("accel_to_decel_enable", coBool);
+    def = this->add("first_layer_travel_acceleration", coFloatOrPercent);
+    def->label = L("First layer travel");
+    def->tooltip = L("Acceleration of travel moves on the first layer. If expressed as a percentage it will be calculated based on the travel acceleration. A value of 0 means the printer will use its firmware default.");
+    def->sidetext = L("mm/s² or %");
+    def->ratio_over = "travel_acceleration";
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloatOrPercent {100., true});
+
+    def = this->add("accel_to_decel_enable", coBools);
     def->label = L("Enable accel_to_decel");
     def->tooltip = L("Klipper's max_accel_to_decel will be adjusted automatically.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(true));
-    
-    def = this->add("accel_to_decel_factor", coPercent);
+    def->set_default_value(new ConfigOptionBools{ true });
+
+    def = this->add("accel_to_decel_factor", coPercents);
     def->label = L("accel_to_decel");
     def->tooltip = L("Klipper's max_accel_to_decel will be adjusted to this %% of acceleration.");
     def->sidetext = "%";
     def->min = 1;
     def->max = 100;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionPercent(50));
+    def->set_default_value(new ConfigOptionPercents { 50. });
     
-    def = this->add("default_jerk", coFloat);
+    def = this->add("default_jerk", coFloats);
     def->label = L("Default");
     def->tooltip = L("Default jerk.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(0));
+    def->set_default_value(new ConfigOptionFloats { 0. });
 
-    def = this->add("default_junction_deviation", coFloat);
+    def = this->add("default_junction_deviation", coFloats);
     def->label = L("Junction Deviation");
     def->tooltip = L("Marlin Firmware Junction Deviation (replaces the traditional XY Jerk setting).");
     def->sidetext = "mm";	// milimeters, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(0));
+    def->set_default_value(new ConfigOptionFloats { 0. });
 
-    def = this->add("outer_wall_jerk", coFloat);
+    def = this->add("outer_wall_jerk", coFloats);
     def->label = L("Outer wall");
     def->tooltip = L("Jerk of outer walls.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(9));
+    def->set_default_value(new ConfigOptionFloats { 9. });
 
-    def = this->add("inner_wall_jerk", coFloat);
+    def = this->add("inner_wall_jerk", coFloats);
     def->label = L("Inner wall");
     def->tooltip = L("Jerk of inner walls.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(9));
+    def->set_default_value(new ConfigOptionFloats { 9. });
 
-    def = this->add("top_surface_jerk", coFloat);
+    def = this->add("top_surface_jerk", coFloats);
     def->label = L("Top surface");
     def->tooltip = L("Jerk for top surface.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(9));
+    def->set_default_value(new ConfigOptionFloats { 9. });
 
-    def = this->add("infill_jerk", coFloat);
+    def = this->add("infill_jerk", coFloats);
     def->label = L("Infill");
     def->tooltip = L("Jerk for infill.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(9));
+    def->set_default_value(new ConfigOptionFloats { 9. });
 
-    def = this->add("initial_layer_jerk", coFloat);
+    def = this->add("initial_layer_jerk", coFloats);
     def->label = L("Initial layer");
     def->tooltip = L("Jerk for initial layer.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(9));
+    def->set_default_value(new ConfigOptionFloats { 9. });
 
-    def = this->add("travel_jerk", coFloat);
+    def = this->add("travel_jerk", coFloats);
     def->label = L("Travel");
     def->tooltip = L("Jerk for travel.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(12));
+    def->set_default_value(new ConfigOptionFloats { 12. });
+
+    def = this->add("first_layer_travel_jerk", coFloatOrPercent);
+    def->label = L("First layer travel");
+    def->tooltip = L("Jerk of travel moves on the first layer. If expressed as a percentage it will be calculated based on the travel jerk. A value of 0 means the printer will use its firmware default.");
+    def->sidetext = L("mm/s or %");
+    def->ratio_over = "travel_jerk";
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloatOrPercent {100., true});
 
     def = this->add("initial_layer_line_width", coFloatOrPercent);
     def->label = L("Initial layer");
@@ -2825,23 +2907,23 @@ void PrintConfigDef::init_fff_params()
     //    "Note that this option only takes effect if no prime tower is generated in current plate.");
     //def->set_default_value(new ConfigOptionBool(0));
 
-    def = this->add("initial_layer_speed", coFloat);
+    def = this->add("initial_layer_speed", coFloats);
     def->label = L("Initial layer");
     def->tooltip = L("Speed of initial layer except the solid infill part.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(30));
+    def->set_default_value(new ConfigOptionFloats { 30. });
 
-    def = this->add("initial_layer_infill_speed", coFloat);
+    def = this->add("initial_layer_infill_speed", coFloats);
     def->label = L("Initial layer infill");
     def->tooltip = L("Speed of solid infill part of initial layer.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(60.0));
+    def->set_default_value(new ConfigOptionFloats { 60. });
 
-    def = this->add("initial_layer_travel_speed", coFloatOrPercent);
+    def = this->add("initial_layer_travel_speed", coFloatsOrPercents);
     def->label = L("Initial layer travel speed");
     def->tooltip = L("Travel speed of initial layer.");
     def->category = L("Speed");
@@ -2849,9 +2931,9 @@ void PrintConfigDef::init_fff_params()
     def->ratio_over = "travel_speed";
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
+    def->set_default_value(new ConfigOptionFloatsOrPercents { FloatOrPercent{100., true} });
 
-    def = this->add("slow_down_layers", coInt);
+    def = this->add("slow_down_layers", coInts);
     def->label = L("Number of slow layers");
     def->tooltip = L("The first few layers are printed slower than normal. "
                      "The speed is gradually increased in a linear fashion over the specified number of layers.");
@@ -2859,7 +2941,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("layers"); // ORCA add side text
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInt(0));
+    def->set_default_value(new ConfigOptionInts { 0 });
 
     def = this->add("nozzle_temperature_initial_layer", coInts);
     def->label = L("Initial layer");
@@ -3044,14 +3126,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0));
     
-    def = this->add("gap_infill_speed", coFloat);
+    def = this->add("gap_infill_speed", coFloats);
     def->label = L("Gap infill");
     def->category = L("Speed");
     def->tooltip = L("Speed of gap infill. Gap usually has irregular line width and should be printed more slowly.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(30));
+    def->set_default_value(new ConfigOptionFloats { 30. });
 
     // BBS
     def          = this->add("precise_z_height", coBool);
@@ -3450,14 +3532,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionPercent(25));
 
-    def = this->add("sparse_infill_speed", coFloat);
+    def = this->add("sparse_infill_speed", coFloats);
     def->label = L("Sparse infill");
     def->category = L("Speed");
     def->tooltip = L("Speed of internal sparse infill.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(100));
+    def->set_default_value(new ConfigOptionFloats { 100. });
 
     def = this->add("inherits", coString);
     def->label = L("Inherits profile");
@@ -3618,14 +3700,14 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0));
 
-    def = this->add("ironing_speed", coFloat);
+    def = this->add("ironing_speed", coFloats);
     def->label = L("Ironing speed");
     def->category = L("Quality");
     def->tooltip = L("Print speed of ironing lines.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(20));
+    def->set_default_value(new ConfigOptionFloats { 20. });
 
     def           = this->add("ironing_angle", coFloat);
     def->label    = L("Ironing angle");
@@ -3892,13 +3974,13 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloats { 0. });
 
-    def = this->add("max_volumetric_extrusion_rate_slope", coFloat);
+    def = this->add("max_volumetric_extrusion_rate_slope", coFloats);
     def->label = L("Extrusion rate smoothing");
-    def->tooltip = L("This parameter smooths out sudden extrusion rate changes that happen when " 
+    def->tooltip = L("This parameter smooths out sudden extrusion rate changes that happen when "
                      "the printer transitions from printing a high flow (high speed/larger width) "
                      "extrusion to a lower flow (lower speed/smaller width) extrusion and vice versa.\n\n"
                      "It defines the maximum rate by which the extruded volumetric flow in mm³/s can change over time. "
-                     "Higher values mean higher extrusion rate changes are allowed, resulting in faster speed transitions.\n\n" 
+                     "Higher values mean higher extrusion rate changes are allowed, resulting in faster speed transitions.\n\n"
                      "A value of 0 disables the feature.\n\n"
                      "For a high speed, high flow direct drive printer (like the Bambu lab or Voron) this value is usually not needed. "
                      "However it can provide some marginal benefit in certain cases where feature speeds vary greatly. For example, "
@@ -3911,9 +3993,9 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = u8"mm³/s²";	// cubic milimeters per second per second, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(0));
+    def->set_default_value(new ConfigOptionFloats { 0. });
 
-    def = this->add("max_volumetric_extrusion_rate_slope_segment_length", coFloat);
+    def = this->add("max_volumetric_extrusion_rate_slope_segment_length", coFloats);
     def->label = L("Smoothing segment length");
     def->tooltip = L("A lower value results in smoother extrusion rate transitions. "
                      "However, this results in a significantly larger G-code file and more instructions for the printer to process.\n\n"
@@ -3923,14 +4005,14 @@ void PrintConfigDef::init_fff_params()
     def->max = 5;
     def->sidetext = "mm";	// milimeters, don't need translation
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(3.0));
-    
-    def = this->add("extrusion_rate_smoothing_external_perimeter_only", coBool);
+    def->set_default_value(new ConfigOptionFloats { 3. });
+
+    def = this->add("extrusion_rate_smoothing_external_perimeter_only", coBools);
     def->label = L("Apply only on external features");
     def->tooltip = L("Applies extrusion rate smoothing only on external perimeters and overhangs. This can help reduce artefacts due to sharp speed transitions on externally visible "
                      "overhangs without impacting the print speed of features that will not be visible to the user.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
+    def->set_default_value(new ConfigOptionBools{ false });
 
 
     def = this->add("fan_min_speed", coFloats);
@@ -4121,6 +4203,92 @@ void PrintConfigDef::init_fff_params()
     def->readonly = false;
     def->set_default_value(new ConfigOptionFloat { 0.0 });
 
+    // Snapmaker: flow-variant support -------------------------------------------------------------
+    // TODO：Revise the copy and add translations
+    def = this->add("filament_volume_type", coEnums);
+    def->label = L("Filament volume type");
+    def->tooltip = L("Flow type of each filament (one entry per filament, e.g. standard / high_flow). "
+                     "The GUI writes its filament-to-flow-type mapping here; flow-variant array options "
+                     "are read at the index the filament's flow type resolves to in the corresponding "
+                     "*_flow_support list.");
+    def->enum_keys_map = &ConfigOptionEnum<FilamentVolumeType>::get_enum_values();
+    def->enum_values.push_back(FLOW_MODE_STANDARD);
+    def->enum_values.push_back(FLOW_MODE_HIGH_FLOW);
+    def->enum_labels.push_back(L("Standard"));
+    def->enum_labels.push_back(L("High flow"));
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionEnumsGeneric { fvtStandard });
+
+    // One entry per extruder (listed in extruder_option_keys(), so it is resized together with
+    // nozzle_diameter by set_num_extruders()). Shares the standard/high_flow value domain of
+    // FilamentVolumeType; unrelated to the device-side NozzleVolumeType (nvtNormal/nvtBigTraffic).
+    def = this->add("nozzle_volume_type", coEnums);
+    def->label = L("Nozzle volume type");
+    def->tooltip = L("Flow type of the nozzle installed on each extruder "
+                     "(one entry per extruder, e.g. standard / high_flow).");
+    def->enum_keys_map = &ConfigOptionEnum<FilamentVolumeType>::get_enum_values();
+    def->enum_values.push_back(FLOW_MODE_STANDARD);
+    def->enum_values.push_back(FLOW_MODE_HIGH_FLOW);
+    def->enum_labels.push_back(L("Standard"));
+    def->enum_labels.push_back(L("High flow"));
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionEnumsGeneric { fvtStandard });
+
+    const ProjectSchemaDefinition& project_schema = ProjectSchemaRegistry::definition();
+    def = this->add(project_schema.config_key, coInt);
+    def->label = L("Project schema version");
+    def->tooltip = L("Version of the project configuration schema stored in the 3MF project.");
+    def->min = 1;
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInt(project_schema.current_version));
+
+    def = this->add("filament_flow_support", coStrings);
+    def->label = L("Filament flow support");
+    def->tooltip = L("Flow variants this filament preset provides values for. Multi-valued filament "
+                     "options are ordered accordingly, the first value belongs to the standard mode.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionStrings { FLOW_MODE_STANDARD });
+
+    def = this->add("process_flow_support", coStrings);
+    def->label = L("Process flow support");
+    def->tooltip = L("Flow variants this process preset provides values for. Multi-valued process "
+                     "options are ordered accordingly, the first value belongs to the standard mode.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionStrings { FLOW_MODE_STANDARD });
+
+    def = this->add("printer_flow_support", coStrings);
+    def->label = L("Printer flow support");
+    def->tooltip = L("Flow variants this printer preset provides values for. Multi-valued printer "
+                     "options are ordered accordingly, the first value belongs to the standard mode.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionStrings { FLOW_MODE_STANDARD });
+
+    def = this->add("filament_grouping_mode", coString);
+    def->label = L("Filament grouping mode");
+    def->tooltip = L("Slicing mode chosen from the slice-button hover popup: standard keeps every "
+                     "filament on standard flow; custom uses the mapping from the custom filament "
+                     "grouping dialog.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(FILAMENT_GROUPING_STANDARD));
+
+    def = this->add("filament_flow_step_size", coInts);
+    def->label = L("Filament flow step size");
+    def->tooltip = L("Segment length (number of declared flow variants) of each filament inside the "
+                     "interleaved filament arrays of a composed config. Filament i owns the segment "
+                     "starting at the sum of the preceding step sizes. Generated when the full config "
+                     "is composed, not part of any preset.");
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionInts { 1 });
+    // end Snapmaker: flow-variant support -------------------------------------------------------------
+
     def = this->add("cooling_tube_retraction", coFloat);
     def->label = L("Cooling tube position");
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");
@@ -4257,7 +4425,7 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(0., false));
 
-    def = this->add("inner_wall_speed", coFloat);
+    def = this->add("inner_wall_speed", coFloats);
     def->label = L("Inner wall");
     def->category = L("Speed");
     def->tooltip = L("Speed of inner wall.");
@@ -4265,7 +4433,7 @@ void PrintConfigDef::init_fff_params()
     def->aliases = { "perimeter_feed_rate" };
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(60));
+    def->set_default_value(new ConfigOptionFloats { 60. });
 
     def = this->add("wall_loops", coInt);
     def->label = L("Overall wall loops"); 
@@ -4318,6 +4486,184 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->height = 6;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionStrings());
+
+    def = this->add("mixed_color_layer_height_a", coFloat);
+    def->label = L("Dithering cadence height A");
+    def->category = L("Others");
+    def->tooltip = L("Layer height contribution of component A for dithering virtual filaments. "
+                     "Set to 0 to use normal 1-layer A / 1-layer B alternation.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->sidetext = "mm";
+    def->min = 0.;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("mixed_color_layer_height_b", coFloat);
+    def->label = L("Dithering cadence height B");
+    def->category = L("Others");
+    def->tooltip = L("Layer height contribution of component B for dithering virtual filaments. "
+                     "Set to 0 to use normal 1-layer A / 1-layer B alternation.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->sidetext = "mm";
+    def->min = 0.;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("mixed_filament_gradient_mode", coBool);
+    def->label = L("Height-weighted cadence");
+    def->category = L("Others");
+    def->tooltip = L("Enable height-weighted cadence for mixed filaments. "
+                     "Limitation: only one height-weighted mixed color should be present at a given Z plane, "
+                     "because independent per-color layer heights are not supported and the resulting layer height applies to the whole plane. "
+                     "When disabled, layer-cycle cadence is used.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("mixed_filament_height_lower_bound", coFloat);
+    def->label = L("Local-Z lower height bound");
+    def->category = L("Others");
+    def->tooltip = L("Lower bound used when Local-Z mixed-filament dithering chooses per-color sublayer heights.\n\n"
+                     "Smaller values let Local-Z use thinner sublayers for a color when needed.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->sidetext = "mm";
+    def->min = 0.01;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.04));
+
+    def = this->add("mixed_filament_height_upper_bound", coFloat);
+    def->label = L("Local-Z upper height bound");
+    def->category = L("Others");
+    def->tooltip = L("Upper bound used when Local-Z mixed-filament dithering chooses per-color sublayer heights.\n\n"
+                     "Larger values let Local-Z use thicker sublayers for a color when needed.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->sidetext = "mm";
+    def->min = 0.01;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.16));
+
+    def = this->add("mixed_filament_advanced_dithering", coBool);
+    def->label = L("Advanced dithering");
+    def->category = L("Others");
+    def->tooltip = L("Distribute mixed filament layer-cycle cadence using an advanced ordered dithering pattern "
+                     "instead of a simple contiguous A-then-B run. This can reduce visible striping for some hues.\n\n"
+                     "This is an even more experimental mode and the perceived color may differ from normal dithering "
+                     "for the same filament pair and ratio.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("mixed_filament_pointillism_pixel_size", coFloat);
+    def->label = L("Pointillisme pixel size");
+    def->category = L("Others");
+    def->tooltip = L("Length of one pointillisme segment along an extrusion path for same-layer pointillisme mode. "
+                     "Set to 0 to use automatic nozzle-based sizing.\n\n"
+                     "Warning: Same-layer pointillisme is extremely experimental and may produce unusable results.");
+    def->sidetext = "mm";
+    def->min = 0.;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("mixed_filament_pointillism_line_gap", coFloat);
+    def->label = L("Pointillisme line gap");
+    def->category = L("Others");
+    def->tooltip = L("Optional non-extruded spacing between adjacent pointillisme segments. "
+                     "Increase carefully to improve separation and print quality.\n\n"
+                     "Warning: Same-layer pointillisme is extremely experimental and may produce unusable results.");
+    def->sidetext = "mm";
+    def->min = 0.;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("mixed_filament_component_bias_enabled", coBool);
+    def->label = L("Enable mixed filament bias");
+    def->category = L("Others");
+    def->tooltip = L("Show and apply the per-row mixed filament Bias control.\n\n"
+                     "When enabled, the selected filament in a mixed pair is recessed slightly so the other component becomes more visible.\n\n"
+                     "Bias is ignored for grouped wall patterns, same-layer pointillisme, and Local Z dithering.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("mixed_filament_surface_indentation", coFloat);
+    def->label = L("Selective Expansion contraction");
+    def->category = L("Others");
+    def->tooltip = L("XY offset applied to mixed-filament painted regions before region assignment.\n\n"
+                     "Positive values contract the mixed zone inward. Negative values expand it outward.\n\n"
+                     "This applies to mixed filament usage in layer cadence, height cadence, same-layer pointillisme, and local Z dithering.");
+    def->sidetext = "mm";
+    def->min = -2.0;
+    def->max = 2.0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("mixed_filament_region_collapse", coBool);
+    def->label = L("Collapse same-color mixed regions");
+    def->category = L("Others");
+    def->tooltip = L("Merge ordinary mixed-filament painted regions into a single area when they resolve to the same physical filament on a layer.\n\n"
+                     "This improves continuity for adjacent same-color areas.\n\n"
+                     "Subdivide Mix Layer disables this behavior, and gradient mixed regions also bypass it because they use the Local-Z pipeline.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("mixed_filament_definitions", coString);
+    def->label = L("Mixed filament custom definitions");
+    def->tooltip = L("Serialized custom mixed filament rows.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->gui_flags = "serialized";
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("dithering_z_step_size", coFloat);
+    def->label = L("Dithering Z step size");
+    def->category = L("Others");
+    def->tooltip = L("Layer height used in Z zones painted with dithering (mixed virtual filaments). "
+                     "Set to 0 to keep normal layer height in those zones.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->sidetext = "mm";
+    def->min = 0.;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("dithering_local_z_mode", coBool);
+    def->label = L("Subdivide Mix Layer");
+    def->category = L("Material");
+    def->tooltip  = L("Enable \"Subdivide Mix Layer\" for mixing areas. Layer height will be subdivided for better color mixing results.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("dithering_local_z_whole_objects", coBool);
+    def->label = L("Full domain");
+    def->category = L("Others");
+    def->tooltip = L("Experimental. Apply Local-Z thinning across whole mixed-color regions instead of limiting the effect strictly to painted mixed masks.\n\n"
+                     "Only available when Subdivide Mix Layer is enabled.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("dithering_local_z_infill", coBool);
+    def->label = L("Apply subdivision to infill");
+    def->category = L("Material");
+    def->tooltip = L("Experimental. When Subdivide Mix Layer is enabled, also apply the same subdivision to infill inside mixed-color areas.\n\n"
+                     "This is enabled automatically with Subdivide Mix Layer. Turn it off to keep infill on the normal layer height.\n\n"
+                     "It can improve internal color mixing, but may add toolchanges and affect infill behavior.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("dithering_local_z_direct_multicolor", coBool);
+    def->label = L("Use direct multicolor Local-Z solver");
+    def->category = L("Others");
+    def->tooltip = L("Experimental. For mixed rows with 3 or more physical filaments, allocate Local-Z sublayers directly across all components with carry-over error between layers instead of collapsing them into pair cadence.\n\n"
+                     "This can reduce visible banding in multicolor Local-Z blends at the cost of more toolchanges. It is ignored when explicit Local-Z A/B heights are set.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("dithering_step_painted_zones_only", coBool);
+    def->label = L("Use step size in painted zones only");
+    def->category = L("Others");
+    def->tooltip = L("When enabled, dithering Z step size is applied only where mixed filament is painted. "
+                     "Unpainted zones keep their original layer height.\n\n"
+                     "Detailed mixed filament setting explanations will be published once the project wiki is available.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
     
     def = this->add("printer_model", coString);
     def->label = L("Printer type");
@@ -4381,12 +4727,11 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def = this->add("raft_first_layer_expansion", coFloat);
     def->label = L("Initial layer expansion");
     def->category = L("Support");
-    def->tooltip = L("Expand the first raft or support layer to improve bed plate adhesion.");
+    def->tooltip = L("Expand the first raft or support layer to improve bed plate adhesion, -1 means auto");
     def->sidetext = "mm";	// milimeters, don't need translation
-    def->min = 0;
+    def->min = -1;
     def->mode = comAdvanced;
-    //BBS: change from 3.0 to 2.0
-    def->set_default_value(new ConfigOptionFloat(2.0));
+    def->set_default_value(new ConfigOptionFloat(-1));
 
     def = this->add("raft_layers", coInt);
     def->label = L("Raft layers");
@@ -4918,14 +5263,14 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(0., false));
 
-    def = this->add("internal_solid_infill_speed", coFloat);
+    def = this->add("internal_solid_infill_speed", coFloats);
     def->label = L("Internal solid infill");
     def->category = L("Speed");
     def->tooltip = L("Speed of internal solid infill, not the top and bottom surface.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(100));
+    def->set_default_value(new ConfigOptionFloats { 100. });
 
     def = this->add("spiral_mode", coBool);
     def->label = L("Spiral vase");
@@ -5106,7 +5451,7 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->tooltip = L("If enabled, the wipe tower will not be printed on layers with no tool changes. "
                     "On layers with a tool change, extruder will travel downward to print the wipe tower. "
                     "User is responsible for ensuring there is no collision with the print.");
-    def->mode = comAdvanced;
+    def->mode = comDevelop;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("single_extruder_multi_material_priming", coBool);
@@ -5358,6 +5703,24 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0.5));
 
+    def = this->add("support_interface_min_area", coFloat);
+    def->gui_type = ConfigOptionDef::GUIType::f_enum_open;
+    def->label    = L("Minimum Support Contact Area");
+    def->category = L("Support");
+    def->tooltip  = L("Lower values generate more support contact surfaces.");
+    def->sidetext = "mm²";	// square milimeters, don't need translation
+    def->min      = 0;
+    def->enum_values.push_back("0");
+    def->enum_values.push_back("0.25");
+    def->enum_values.push_back("0.64");
+    def->enum_values.push_back("1");
+    def->enum_labels.push_back("0");
+    def->enum_labels.push_back("0.25");
+    def->enum_labels.push_back("0.64");
+    def->enum_labels.push_back("1");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.25));
+
     //BBS
     def = this->add("support_bottom_interface_spacing", coFloat);
     def->label = L("Bottom interface spacing");
@@ -5368,19 +5731,24 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0.5));
 
-    def = this->add("support_interface_speed", coFloat);
+    def = this->add("support_interface_speed", coFloats);
     def->label = L("Support interface");
     def->category = L("Speed");
     def->tooltip = L("Speed of support interface.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(80));
+    def->set_default_value(new ConfigOptionFloats { 80. });
 
     def = this->add("support_base_pattern", coEnum);
     def->label = L("Base pattern");
     def->category = L("Support");
-    def->tooltip = L("Line pattern of support.");
+    def->tooltip  = L("Line pattern of support.\n\n"
+                        "The Default option for Tree supports is Hollow, which means no base pattern. "
+                        "For other support types, the Default option is the Rectilinear pattern.\n\n"
+                        "NOTE: For Organic supports, the two walls are supported only with the Hollow/Default base pattern. "
+                        "The Lightning base pattern is supported only by Tree Slim/Strong/Hybrid supports. "
+                        "For the other support types, the Rectilinear will be used instead of Lightning.");
     def->enum_keys_map = &ConfigOptionEnum<SupportMaterialPattern>::get_enum_values();
     def->enum_values.push_back("default");
     def->enum_values.push_back("rectilinear");
@@ -5434,14 +5802,14 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0));
 
-    def = this->add("support_speed", coFloat);
+    def = this->add("support_speed", coFloats);
     def->label = L("Support");
     def->category = L("Speed");
     def->tooltip = L("Speed of support.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(80));
+    def->set_default_value(new ConfigOptionFloats { 80. });
 
     def = this->add("support_style", coEnum);
     def->label = L("Style");
@@ -5477,14 +5845,14 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->tooltip = L("Support layer uses layer height independent with object layer. This is to support customizing z-gap and save print time. "
                      "This option will be invalid when the prime tower is enabled.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(true));
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("support_threshold_angle", coInt);
     def->label = L("Threshold angle");
     def->category = L("Support");
     def->tooltip = L("Support will be generated for overhangs whose slope angle is below the threshold.");
     def->sidetext = "°";	// degrees, don't need translation
-    def->min = 0;
+    def->min = 1;
     def->max = 90;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionInt(30));
@@ -5521,6 +5889,43 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->max = 60;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(40.));
+
+    // Snapmaker: Support transition layer parameters
+    def = this->add("tree_support_transition_layers", coInt);
+    def->label = L("Tree support transition layers");
+    def->category = L("Support");
+    def->tooltip = L("Number of transition layers between tree support interface and support body. 0 disables transition layers. Bambu Studio uses 1 layer by default; Snapmaker recommends 2 layers for better adhesion with high-shrinkage materials like ABS/PC/PA.");
+    def->sidetext = L("layers");
+    def->min = 0;
+    def->max = 3;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(2));
+
+    def = this->add("support_transition_perimeter", coBool);
+    def->label = L("Support transition perimeter");
+    def->category = L("Support");
+    def->tooltip = L("Generate a perimeter loop before transition layer infill for better surface connection. Recommended to keep enabled.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("support_transition_speed", coFloats);
+    def->label = L("Support transition speed");
+    def->category = L("Speed");
+    def->tooltip = L("Independent printing speed for support transition layers. Lower speed improves layer adhesion. Different from bridge_speed which is for bridging over gaps.");
+    def->sidetext = L("mm/s");
+    def->min = 1;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats { 50. });
+
+    def = this->add("support_transition_flow_ratio", coFloatOrPercent);
+    def->label = L("Support transition flow ratio");
+    def->category = L("Support");
+    def->tooltip = L("Flow ratio for support transition layers relative to normal support flow. Slightly lower than interface flow for a more natural transition. 0.85 = 85% of normal support flow.");
+    def->sidetext = L("%");
+    def->min = 0.1;
+    def->max = 2.0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloatOrPercent(1.0, false));
 
     def = this->add("tree_support_angle_slow", coFloat);
     def->label = L("Preferred Branch Angle");
@@ -5788,14 +6193,14 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloatOrPercent(0., false));
 
-    def = this->add("top_surface_speed", coFloat);
+    def = this->add("top_surface_speed", coFloats);
     def->label = L("Top surface");
     def->category = L("Speed");
     def->tooltip = L("Speed of top surface infill which is solid.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(100));
+    def->set_default_value(new ConfigOptionFloats { 100. });
 
     def = this->add("top_shell_layers", coInt);
     def->label = L("Top shell layers");
@@ -5818,6 +6223,16 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->sidetext = "mm";	// milimeters, don't need translation
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(0.6));
+
+    // Same default as BambuStudio c782fbb8; must stay <= top_shell_layers default (4); engine clamps 0 to act as 1.
+    def = this->add("top_color_penetration_layers", coInt);
+    def->label = L("Top paint penetration layers");
+    def->category = L("Strength");
+    def->sidetext = L("layers");
+    def->tooltip = L("This is  the number of layers of top paint penetration.");
+    def->min = 0;
+    def->set_default_value(new ConfigOptionInt(4));
+
 
     def = this->add("top_surface_density", coPercent);
     def->label = L("Top surface density");
@@ -5843,13 +6258,13 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->set_default_value(new ConfigOptionPercent(100));
 
 
-    def = this->add("travel_speed", coFloat);
+    def = this->add("travel_speed", coFloats);
     def->label = L("Travel");
     def->tooltip = L("Speed of travel which is faster and without extrusion.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->min = 1;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(120));
+    def->set_default_value(new ConfigOptionFloats { 120. });
 
     def = this->add("travel_speed_z", coFloat);
     //def->label = L("Z travel");
@@ -5884,6 +6299,18 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->tooltip = L("The wiping tower can be used to clean up the residue on the nozzle and stabilize the chamber pressure inside the nozzle, "
                     "in order to avoid appearance defects when printing objects.");
     def->mode = comSimple;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("enable_tower_interface_features", coBool);
+    def->label = L("Enable tower interface features");
+    def->tooltip = L("Enable optimized prime tower interface behavior when different materials meet.");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("enable_tower_interface_cooldown_during_tower", coBool);
+    def->label = L("Cool down from interface boost during prime tower");
+    def->tooltip = L("When interface-layer temperature boost is active, set the nozzle back to print temperature at the start of the prime tower so it cools down during the tower.");
+    def->mode = comDevelop;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("flush_volumes_vector", coFloats);
@@ -5989,13 +6416,8 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->set_default_value(new ConfigOptionFloat(30.0));
     
     def = this->add("wipe_tower_max_purge_speed", coFloat);
-    def->label = L("Maximum wipe tower print speed");
-    def->tooltip = L("The maximum print speed when purging in the wipe tower and printing the wipe tower sparse layers. "
-                     "When purging, if the sparse infill speed or calculated speed from the filament max volumetric speed is lower, the lowest will be used instead.\n\n"
-                     "When printing the sparse layers, if the internal perimeter speed or calculated speed from the filament max volumetric speed is lower, the lowest will be used instead.\n\n"
-                     "Increasing this speed may affect the tower's stability as well as increase the force with which the nozzle collides with any blobs that may have formed on the wipe tower.\n\n"
-                     "Before increasing this parameter beyond the default of 90 mm/s, make sure your printer can reliably bridge at the increased speeds and that ooze when tool changing is well controlled.\n\n"
-                     "For the wipe tower external perimeters the internal perimeter speed is used regardless of this setting.");
+    def->label = L("Max speed");
+    def->tooltip = L("The maximum printing speed on the prime tower excluding ramming.");
     def->sidetext = "mm/s";	// milimeters per second, don't need translation
     def->mode = comAdvanced;
     def->min = 10;
@@ -6040,7 +6462,6 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->mode    = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
 
-
     def = this->add("wipe_tower_filament", coInt);
     def->gui_type = ConfigOptionDef::GUIType::i_enum_open;
     def->label = L("Wipe tower");
@@ -6050,6 +6471,20 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->min = 0;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(0));
+
+    def          = this->add("wipe_tower_wall_gap", coBool);
+    def->label   = L("Wall gap");
+    def->tooltip = L("Create small gaps in the wipe tower outer wall at tool change entry points. "
+                     "The first extrusion path after a filament change will enter through the gap, "
+                     "leaving the filament blob on the gap edge instead of on the outer wall surface.");
+    def->mode    = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("prime_tower_enable_framework", coBool);
+    def->label = L("Internal ribs");
+    def->tooltip = L("Enable internal ribs to increase the stability of the prime tower.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("wiping_volumes_extruders", coFloats);
     def->label = L("Purging volumes - load/unload volumes");
@@ -6109,6 +6544,16 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->max = 300.;
     def->set_default_value(new ConfigOptionPercent(100.));
 
+    def = this->add("local_z_wipe_tower_purge_lines", coFloat);
+    def->label = L("Local-Z mini wipe lines");
+    def->tooltip = L("Number of purge lines reserved for each runtime Local-Z wipe tower toolchange. "
+                     "Higher values improve cleanup but increase tower depth. "
+                     "Only used when Local-Z dithering and the prime tower are enabled.");
+    def->sidetext = L("lines");
+    def->mode = comAdvanced;
+    def->min = 1.0;
+    def->set_default_value(new ConfigOptionFloat(3.0));
+
     def = this->add("idle_temperature", coInts);
     def->label = L("Idle temperature");
     def->tooltip = L("Nozzle temperature when the tool is currently not used in multi-tool setups. "
@@ -6117,6 +6562,21 @@ def = this->add("outer_wall_layer_height_max", coFloat);
     def->min = 0;
     def->max = max_temp;
     def->set_default_value(new ConfigOptionInts{0});
+
+    def = this->add("filament_tower_ironing_area", coFloats);
+    def->label = L("Tower ironing area");
+    def->tooltip = L("Ironing area for prime tower interface layer (where different materials meet).");
+    def->sidetext = L("mm²");
+    def->min = 0;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloats{4.});
+
+    def = this->add("filament_adhesiveness_category", coInts);
+    def->label = L("Adhesiveness Category");
+    def->tooltip = L("Filament category");
+    def->min = 0;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionInts{ 100 });
 
     def = this->add("xy_hole_compensation", coFloat);
     def->label = L("X-Y hole compensation");
@@ -6371,13 +6831,16 @@ void PrintConfigDef::init_extruder_option_keys()
         "retraction_length", "z_hop", "z_hop_types", "z_hop_when_prime", "travel_slope", "retract_lift_above", "retract_lift_below", "retract_lift_enforce", "retraction_speed", "deretraction_speed",
         "retract_before_wipe", "retract_restart_extra", "retraction_minimum_travel", "wipe", "wipe_distance",
         "retract_when_changing_layer", "retract_length_toolchange", "retract_restart_extra_toolchange", "extruder_colour",
-        "default_filament_profile","retraction_distances_when_cut","long_retractions_when_cut"
+        "default_filament_profile","retraction_distances_when_cut","long_retractions_when_cut",
+        // Snapmaker: flow-variant
+        "nozzle_volume_type"
     };
 
     m_extruder_retract_keys = {
         "deretraction_speed",
         "long_retractions_when_cut",
         "retract_before_wipe",
+        "retract_length_toolchange",
         "retract_lift_above",
         "retract_lift_below",
         "retract_lift_enforce",
@@ -6406,16 +6869,19 @@ void PrintConfigDef::init_filament_option_keys()
         "retraction_length", "z_hop", "z_hop_types", "retract_lift_above", "retract_lift_below", "retract_lift_enforce", "retraction_speed", "deretraction_speed",
         "retract_before_wipe", "retract_restart_extra", "retraction_minimum_travel", "wipe", "wipe_distance",
         "retract_when_changing_layer", "retract_length_toolchange", "retract_restart_extra_toolchange", "filament_colour",
+        "filament_multi_colors", "filament_colour_mode",
         "default_filament_profile","retraction_distances_when_cut","long_retractions_when_cut"/*,"filament_seam_gap"*/
 		};
     m_filament_retract_keys = {
         "deretraction_speed",
         "long_retractions_when_cut",
         "retract_before_wipe",
+        "retract_length_toolchange",
         "retract_lift_above",
         "retract_lift_below",
         "retract_lift_enforce",
         "retract_restart_extra",
+        "retract_restart_extra_toolchange",
         "retract_when_changing_layer",
         "retraction_distances_when_cut",
         "retraction_length",
@@ -6425,8 +6891,6 @@ void PrintConfigDef::init_filament_option_keys()
         "wipe_distance",
         "z_hop",
         "z_hop_types",
-        "retract_length_toolchange",
-        "retract_restart_extra_toolchange",
     };
     assert(std::is_sorted(m_filament_retract_keys.begin(), m_filament_retract_keys.end()));
 }
@@ -7069,6 +7533,240 @@ void PrintConfigDef::init_sla_params()
     def->set_default_value(new ConfigOptionEnum<SLAMaterialSpeed>(slamsFast));
 }
 
+// ==== Snapmaker: flow-variant support ============================================================
+
+const ConfigOptionStrings* strings_option(const ConfigBase& config, const char* key)
+{
+    const ConfigOption* opt = config.option(key);
+    if (opt == nullptr || opt->type() != coStrings)
+        return nullptr;
+
+    return static_cast<const ConfigOptionStrings*>(opt);
+}
+
+const ConfigOptionInts* ints_option(const ConfigBase& config, const char* key)
+{
+    const ConfigOption* opt = config.option(key);
+    if (opt == nullptr || opt->type() != coInts)
+        return nullptr;
+
+    return static_cast<const ConfigOptionInts*>(opt);
+}
+
+const ConfigOptionEnumsGeneric* enums_option(const ConfigBase& config, const char* key)
+{
+    const ConfigOption* opt = config.option(key);
+    if (opt == nullptr || opt->type() != coEnums)
+        return nullptr;
+
+    return static_cast<const ConfigOptionEnumsGeneric*>(opt);
+}
+
+const char* to_string(FilamentVolumeType type)
+{
+    const t_config_enum_names &names = ConfigOptionEnum<FilamentVolumeType>::get_enum_names();
+    if (int(type) < 0 || int(type) >= int(names.size()))
+        return FLOW_MODE_STANDARD;
+    return names[int(type)].c_str();
+}
+
+FilamentVolumeType filament_volume_type_from_string(const std::string &str)
+{
+    FilamentVolumeType type = fvtStandard;
+    ConfigOptionEnum<FilamentVolumeType>::from_string(str, type);
+    return type;
+}
+
+size_t flow_variant_index(const std::vector<std::string> &flow_support, const std::string &mode)
+{
+    if (mode.empty())
+        return 0;
+
+    auto it = std::find(flow_support.begin(), flow_support.end(), mode);
+    return it == flow_support.end() ? 0 : size_t(it - flow_support.begin());
+}
+
+const char* flow_support_key(ConfigFlowDomain domain)
+{
+    switch (domain) {
+    case ConfigFlowDomain::Filament:
+        return "filament_flow_support";
+    case ConfigFlowDomain::Process:
+        return "process_flow_support";
+    default:
+        return "printer_flow_support";
+    }
+}
+
+const std::vector<std::string>& filament_flow_variant_options()
+{
+    static const std::vector<std::string> options {
+        "filament_flow_ratio",
+        "enable_pressure_advance",
+        "pressure_advance",
+        "nozzle_temperature_initial_layer",
+        "nozzle_temperature",
+        "filament_max_volumetric_speed",
+        "fan_min_speed",
+        "fan_max_speed",
+        "additional_cooling_fan_speed",
+        "filament_retraction_length",
+        "filament_retraction_speed",
+        "filament_deretraction_speed",
+        "filament_z_hop_types",
+        "filament_wipe_distance",
+        "filament_retract_length_toolchange",
+        "filament_multitool_ramming",
+        "filament_multitool_ramming_volume",
+        "filament_multitool_ramming_flow",
+        "filament_minimal_purge_on_wipe_tower",
+    };
+    return options;
+}
+
+bool is_filament_flow_variant_option(const std::string &key)
+{
+    const auto &options = filament_flow_variant_options();
+    return std::find(options.begin(), options.end(), key) != options.end();
+}
+
+const std::vector<std::string>& process_flow_variant_options()
+{
+    // Keys whose values are arrayed per declared flow variant (standard / high_flow / ...).
+    // Effective value is resolved at read time via ConfigFlowDomain::Process.
+    // Ordered by logical group: speed, acceleration, jerk, volumetric-flow shaping.
+    // NOTE: keep in sync with the vector-typed defs in this file (coFloats / coFloatsOrPercents /
+    // coBools / coPercents / coInts). Once a key's reads/writes are migrated to
+    // get_value_at / process_flow_value, list it here.
+    static const std::vector<std::string> options {
+        // ---- speed (region / object / gcode / print) ----
+        "outer_wall_speed",
+        "inner_wall_speed",
+        "sparse_infill_speed",
+        "internal_solid_infill_speed",
+        "top_surface_speed",
+        "gap_infill_speed",
+        "bridge_speed",
+        "internal_bridge_speed",
+        "ironing_speed",
+        "small_perimeter_speed",
+        "small_perimeter_threshold",
+        "support_speed",
+        "support_interface_speed",
+        "initial_layer_speed",
+        "initial_layer_infill_speed",
+        "initial_layer_travel_speed",
+        "travel_speed",
+        "slow_down_layers",
+        "overhang_1_4_speed",
+        "overhang_2_4_speed",
+        "overhang_3_4_speed",
+        "overhang_4_4_speed",
+        "enable_overhang_speed",
+        "slowdown_for_curled_perimeters",
+        // ---- acceleration ----
+        "default_acceleration",
+        "outer_wall_acceleration",
+        "inner_wall_acceleration",
+        "top_surface_acceleration",
+        "initial_layer_acceleration",
+        "bridge_acceleration",
+        "travel_acceleration",
+        "sparse_infill_acceleration",
+        "internal_solid_infill_acceleration",
+        "accel_to_decel_enable",
+        "accel_to_decel_factor",
+        // ---- jerk / junction deviation ----
+        "default_jerk",
+        "outer_wall_jerk",
+        "inner_wall_jerk",
+        "infill_jerk",
+        "top_surface_jerk",
+        "initial_layer_jerk",
+        "travel_jerk",
+        "default_junction_deviation",
+        // ---- volumetric flow shaping (pressure equalizer) ----
+        "max_volumetric_extrusion_rate_slope",
+        "max_volumetric_extrusion_rate_slope_segment_length",
+        "extrusion_rate_smoothing_external_perimeter_only",
+    };
+    return options;
+}
+
+bool is_process_flow_variant_option(const std::string &key)
+{
+    const auto &options = process_flow_variant_options();
+    return std::find(options.begin(), options.end(), key) != options.end();
+}
+
+const std::vector<std::string>& machine_flow_variant_options()
+{
+    static const std::vector<std::string> options {};
+    return options;
+}
+
+bool is_machine_flow_variant_option(const std::string &key)
+{
+    const auto &options = machine_flow_variant_options();
+    return std::find(options.begin(), options.end(), key) != options.end();
+}
+
+size_t get_config_idx(const ConfigBase &config, ConfigFlowDomain domain, unsigned int filament_id)
+{
+    const ConfigOptionEnumsGeneric* volume_types = enums_option(config, "filament_volume_type");
+    const ConfigOptionStrings*      flow_support = strings_option(config, flow_support_key(domain));
+
+    switch (domain) {
+    case ConfigFlowDomain::Process:
+    case ConfigFlowDomain::Printer: {
+        if (volume_types == nullptr || volume_types->values.empty() || flow_support == nullptr)
+            return 0;
+
+        const FilamentVolumeType volume_type = filament_id < volume_types->values.size()
+            ? FilamentVolumeType(volume_types->values[filament_id])
+            : fvtStandard;
+        const std::string flow_type = to_string(volume_type);
+        return flow_variant_index(flow_support->values, flow_type);
+    }
+    case ConfigFlowDomain::Filament: {
+        const ConfigOptionInts* step_sizes = ints_option(config, "filament_flow_step_size");
+        if (step_sizes == nullptr || step_sizes->values.empty())
+            return filament_id;
+
+        auto step_size_of = [step_sizes](size_t filament_idx) -> size_t {
+            if (filament_idx >= step_sizes->values.size())
+                return 1;
+            return size_t(std::max(1, step_sizes->values[filament_idx]));
+        };
+
+        size_t segment_start = 0;
+        for (size_t i = 0; i < filament_id; ++i)
+            segment_start += step_size_of(i);
+
+        if (volume_types == nullptr || volume_types->values.empty() || flow_support == nullptr)
+            return segment_start;
+
+        const FilamentVolumeType volume_type = filament_id < volume_types->values.size()
+            ? FilamentVolumeType(volume_types->values[filament_id])
+            : fvtStandard;
+        const std::string flow_type    = to_string(volume_type);
+        const size_t      segment_size = step_size_of(filament_id);
+        const auto&       declarations = flow_support->values;
+        for (size_t pos = 0; pos < segment_size && segment_start + pos < declarations.size(); ++pos) {
+            if (declarations[segment_start + pos] == flow_type)
+                return segment_start + pos;
+        }
+
+        // The flow type is not declared by this filament -> its standard (first) value.
+        return segment_start;
+    }
+    } // switch
+
+    return 0;
+}
+
+// ==== end Snapmaker: flow-variant support ========================================================
+
 void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &value)
 {
     //BBS: handle legacy options
@@ -7078,7 +7776,8 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         opt_key = "prime_tower_width";
     } else if (opt_key == "wiping_volume") {
         opt_key = "prime_volume";
-    } else if (opt_key == "wipe_tower_brim_width") {
+    }
+    else if (opt_key == "wipe_tower_brim_width") {
         opt_key = "prime_tower_brim_width";
     } else if (opt_key == "tool_change_gcode") {
         opt_key = "change_filament_gcode";
@@ -7212,7 +7911,7 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         "max_volumetric_speed", "max_print_speed",
         "support_closing_radius",
         "remove_freq_sweep", "remove_bed_leveling", "remove_extrusion_calibration",
-        "support_transition_line_width", "support_transition_speed", "bed_temperature", "bed_temperature_initial_layer",
+        "support_transition_line_width", "bed_temperature", "bed_temperature_initial_layer",
         "can_switch_nozzle_type", "can_add_auxiliary_fan", "extra_flush_volume", "spaghetti_detector", "adaptive_layer_height",
         "z_hop_type", "z_lift_type", "bed_temperature_difference","long_retraction_when_cut",
         "retraction_distance_when_cut",
@@ -7559,9 +8258,10 @@ void DynamicPrintConfig::set_num_filaments(unsigned int num_filaments)
 {
     const auto& defaults = FullPrintConfig::defaults();
     for (const std::string& key : print_config_def.filament_option_keys()) {
-        if (key == "default_filament_profile")
-            // Don't resize this field, as it is presented to the user at the "Dependencies" page of the Printer profile and we don't want to present
-            // empty fields there, if not defined by the system profile.
+        if (key == "default_filament_profile" || key == "filament_flow_support" ||
+            key == "filament_flow_step_size" || is_filament_flow_variant_option(key))
+            // Flow-variant options use declaration-driven segmented storage and are
+            // normalized separately by Preset::normalize().
             continue;
         auto* opt = this->option(key, false);
         assert(opt != nullptr);
@@ -7593,7 +8293,7 @@ std::map<std::string, std::string> DynamicPrintConfig::validate(bool under_cli)
 
 std::string DynamicPrintConfig::get_filament_type(std::string &displayed_filament_type, int id)
 {
-    auto* filament_id = dynamic_cast<const ConfigOptionStrings*>(this->option("filament_id"));
+    auto* filament_id = dynamic_cast<const ConfigOptionStrings*>(this->option("filament_ids"));
     auto* filament_type = dynamic_cast<const ConfigOptionStrings*>(this->option("filament_type"));
     auto* filament_is_support = dynamic_cast<const ConfigOptionBools*>(this->option("filament_is_support"));
 
@@ -7711,6 +8411,13 @@ std::map<std::string, std::string> validate(const FullPrintConfig &cfg, bool und
     }
     if (cfg.bottom_shell_layers < 0) {
         error_message.emplace("bottom_shell_layers", L("invalid value ") + std::to_string(cfg.bottom_shell_layers));
+    }
+    // Negative penetration wraps to SIZE_MAX in the MMU loop; reject like the shell keys.
+    if (cfg.top_color_penetration_layers < 0) {
+        error_message.emplace("top_color_penetration_layers", L("invalid value ") + std::to_string(cfg.top_color_penetration_layers));
+    }
+    if (cfg.bottom_color_penetration_layers < 0) {
+        error_message.emplace("bottom_color_penetration_layers", L("invalid value ") + std::to_string(cfg.bottom_color_penetration_layers));
     }
 
     if (cfg.use_firmware_retraction.value &&
@@ -8622,7 +9329,7 @@ TemperaturesConfigDef::TemperaturesConfigDef()
 
     new_def("bed_temperature", coInts, "Bed temperature", "Vector of bed temperatures for each extruder/filament.")
     new_def("bed_temperature_initial_layer", coInts, "Initial layer bed temperature", "Vector of initial layer bed temperatures for each extruder/filament. Provides the same value as first_layer_bed_temperature.")
-    new_def("bed_temperature_initial_layer_single", coInt, "Initial layer bed temperature (initial extruder)", "Initial layer bed temperature for the initial extruder. Same as bed_temperature_initial_layer[initial_extruder]")
+    new_def("bed_temperature_initial_layer_single", coInt, "Initial layer bed temperature (max of used filaments)", "Initial layer bed temperature for a mixed print. This value is the maximum initial layer bed temperature over all used extruders/filaments.")
     new_def("chamber_temperature", coInts, "Chamber temperature", "Vector of chamber temperatures for each extruder/filament.")
     new_def("overall_chamber_temperature", coInt, "Overall chamber temperature", "Overall chamber temperature. This value is the maximum chamber temperature of any extruder/filament used.")
     new_def("first_layer_bed_temperature", coInts, "First layer bed temperature", "Vector of first layer bed temperatures for each extruder/filament. Provides the same value as bed_temperature_initial_layer.")
