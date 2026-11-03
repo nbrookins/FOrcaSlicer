@@ -456,6 +456,8 @@ protected:
     void refresh_flow_variant_view();
     void update_flow_variant_view_visibility();
     size_t flow_variant_view_index() const;
+    // Option groups outside page->m_optgroups that also show flow-variant options.
+    virtual std::vector<ConfigOptionsGroupShp> extra_flow_variant_groups() const { return {}; }
 
 	void			create_line_with_widget(ConfigOptionsGroup* optgroup, const std::string& opt_key, const std::string& path, widget_t widget);
 	wxSizer*		compatible_widget_create(wxWindow* parent, PresetDependencies &deps);
@@ -487,6 +489,13 @@ public:
 		void            build() override;
         void            reload_config() override;
         void            update_description_lines() override;
+        std::vector<ConfigOptionsGroupShp> extra_flow_variant_groups() const override
+        {
+            std::vector<ConfigOptionsGroupShp> groups(m_fos_feature_optgroups.begin(), m_fos_feature_optgroups.end());
+            for (const auto &slot : m_fos_slot_optgroups)
+                groups.insert(groups.end(), slot.begin(), slot.end());
+            return groups;
+        }
         void            toggle_options() override;
         void            update() override;
         void            clear_pages() override;

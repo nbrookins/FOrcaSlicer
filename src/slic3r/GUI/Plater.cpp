@@ -3684,7 +3684,7 @@ void Sidebar::update_all_preset_comboboxes(bool reload_printer_view)
     } else {
         ams_btn->Show(is_snapmaker_u1);
         if (is_snapmaker_u1)
-            ams_btn->SetToolTip(_L("Synchronize filaments from printer"));
+            ams_btn->SetToolTip(_L("Load each head's filament preset from the printer (matched to that head's nozzle size)"));
         auto print_btn_type = MainFrame::PrintSelectType::eExportGcode;
 
         const auto& edit_preset = preset_bundle.printers.get_edited_preset();

@@ -4233,10 +4233,25 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
         }
     }
 
+    // FOS: Color Patch top/bottom detection reads the neighbouring layers' channels, but the
+    // parallel loop below moves channels out of `segmentation` as it goes. Keep an immutable copy
+    // (only when Color Patch is in use). Channel 0 is the default geometry; channel N = filament N.
+    std::vector<std::vector<ExPolygons>> fos_cp_segmentation;
+    {
+        auto any_enabled = [](const ConfigOptionBools *opt) {
+            return opt != nullptr && std::any_of(opt->values.begin(), opt->values.end(), [](unsigned char v) { return v != 0; });
+        };
+        const ModelObject *mo = print_object.model_object();
+        if (any_enabled(mo ? mo->config.get().opt<ConfigOptionBools>("color_patch_enabled") : nullptr) ||
+            any_enabled(&print_object.print()->config().color_patch_enabled))
+            fos_cp_segmentation = segmentation;
+    }
+
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, segmentation.size(), std::max(segmentation.size() / 128, size_t(1))),
         [&print_object,
          &segmentation,
+         &fos_cp_segmentation,
          &mixed_mgr,
          &mixed_zone_component_local_layer_index,
          mixed_zone_phase_slot,
@@ -4637,7 +4652,11 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
                                     // check above for top-face detection
                                     int above_idx = (int)layer_id + 1;
                                     if (above_idx < fos_total_layers) {
-                                        const auto &above_seg = segmentation[above_idx][ext_idx];
+                                        static const ExPolygons fos_empty_seg;
+                                        const auto &above_seg =
+                                            (above_idx < (int)fos_cp_segmentation.size() &&
+                                             ext_idx + 1 < fos_cp_segmentation[above_idx].size()) ?
+                                                fos_cp_segmentation[above_idx][ext_idx + 1] : fos_empty_seg;
                                         if (!above_seg.empty()) {
                                             ExPolygons not_covered_above = diff_ex(stolen, above_seg);
                                             if (!not_covered_above.empty())
@@ -4647,7 +4666,11 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
                                     // check below for bottom-face detection
                                     int below_idx = (int)layer_id - 1;
                                     if (below_idx >= 0) {
-                                        const auto &below_seg = segmentation[below_idx][ext_idx];
+                                        static const ExPolygons fos_empty_seg;
+                                        const auto &below_seg =
+                                            (below_idx < (int)fos_cp_segmentation.size() &&
+                                             ext_idx + 1 < fos_cp_segmentation[below_idx].size()) ?
+                                                fos_cp_segmentation[below_idx][ext_idx + 1] : fos_empty_seg;
                                         if (!below_seg.empty()) {
                                             ExPolygons not_covered_below = diff_ex(stolen, below_seg);
                                             if (!not_covered_below.empty() && area(not_covered_below) > area(exposed_stolen))

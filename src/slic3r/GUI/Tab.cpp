@@ -1226,18 +1226,21 @@ void Tab::refresh_flow_variant_view()
     update_flow_variant_view_visibility();
 
     const int flow_index = int(flow_variant_view_index());
-    for (const PageShp& page : m_flow_variant_view->pages)
-    {
-        for (const ConfigOptionsGroupShp& group : page->m_optgroups)
+    auto apply_index = [this, flow_index](const ConfigOptionsGroupShp& group) {
+        if (!group)
+            return;
+        for (const auto& option : group->opt_map())
         {
-            for (const auto& option : group->opt_map())
-            {
-                const std::string& key = option.second.first;
-                if (m_flow_variant_view->is_option(key))
-                    group->set_option_index(key, flow_index);
-            }
+            const std::string& key = option.second.first;
+            if (m_flow_variant_view->is_option(key))
+                group->set_option_index(key, flow_index);
         }
-    }
+    };
+    for (const PageShp& page : m_flow_variant_view->pages)
+        for (const ConfigOptionsGroupShp& group : page->m_optgroups)
+            apply_index(group);
+    for (const ConfigOptionsGroupShp& group : extra_flow_variant_groups())
+        apply_index(group);
 }
 
 void Tab::update_flow_variant_view_visibility()

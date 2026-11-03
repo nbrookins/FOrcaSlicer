@@ -1615,12 +1615,27 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
 
     // FOS: Mixed Filament alternates physical filaments per layer/zone with one flow, which mixed
     // nozzle sizes cannot honour; the two features are mutually exclusive.
+    // extruders() clamps virtual (mixed) IDs to 0, so scan the unclamped 1-based assignments.
     if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
         const size_t num_physical = m_config.filament_colour.size();
-        for (unsigned int extruder_id : extruders)
-            if (m_mixed_filament_mgr.is_mixed(extruder_id + 1, num_physical))
-                return { L("Mixed filaments (color mixing) cannot be used with mixed nozzle sizes. Use the same "
-                           "nozzle size on all heads, or remove the mixed filament from this plate.") };
+        auto is_mixed = [this, num_physical](int filament_id) {
+            return filament_id > 0 && m_mixed_filament_mgr.is_mixed(unsigned(filament_id), num_physical);
+        };
+        bool uses_mixed = has_wipe_tower() && is_mixed(m_config.wipe_tower_filament.value);
+        for (const PrintObject *object : m_objects) {
+            const PrintObjectConfig &ocfg = object->config();
+            uses_mixed = uses_mixed || is_mixed(ocfg.support_filament.value) || is_mixed(ocfg.support_interface_filament.value);
+            for (size_t i = 0; !uses_mixed && i < object->num_printing_regions(); ++i) {
+                const PrintRegionConfig &rcfg = object->printing_region(i).config();
+                uses_mixed = is_mixed(rcfg.wall_filament.value) || is_mixed(rcfg.inner_wall_filament.value) ||
+                             is_mixed(rcfg.sparse_infill_filament.value) || is_mixed(rcfg.solid_infill_filament.value);
+            }
+            if (uses_mixed)
+                break;
+        }
+        if (uses_mixed)
+            return { L("Mixed filaments (color mixing) cannot be used with mixed nozzle sizes. Use the same "
+                       "nozzle size on all heads, or remove the mixed filament from this plate.") };
     }
 
     // FOS: with mixed nozzle sizes, support has no valid "Default" filament. Support paths are

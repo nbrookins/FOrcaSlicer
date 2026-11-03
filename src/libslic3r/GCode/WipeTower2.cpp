@@ -3234,12 +3234,12 @@ void WipeTower2::plan_tower_new()
             tc.ramming_depth /= m_extra_spacing_ramming; // 100% fill
             float line_len = m_wipe_tower_width - 2 * m_perimeter_width;
             float wipe_depth = (tc.required_depth - tc.ramming_depth);
-            float wipe_line_count = std::ceil(wipe_depth / (m_perimeter_width * m_extra_flow));
+            float wipe_line_count = std::ceil(wipe_depth / (tool_line_width(tc.new_tool) * m_extra_flow));
             int nozzle_change_line_count = tc.ramming_depth / first_ramming_width;
 
             tc.required_depth = wipe_depth + tc.ramming_depth;
             tc.wipe_length = wipe_line_count * line_len;
-            tc.wipe_volume = length_to_volume(tc.wipe_length, m_perimeter_width, info.height);
+            tc.wipe_volume = length_to_volume(tc.wipe_length, tool_line_width(tc.new_tool), info.height);
             tc.ramming_length = nozzle_change_line_count * line_len;
         }
 
@@ -3248,12 +3248,12 @@ void WipeTower2::plan_tower_new()
             tc.ramming_depth /= m_extra_spacing_ramming; // 100% fill
             float line_len = m_wipe_tower_width - 2 * m_perimeter_width;
             float wipe_depth = (tc.required_depth - tc.ramming_depth);
-            float wipe_line_count = std::ceil(wipe_depth / (m_perimeter_width * m_extra_flow));
+            float wipe_line_count = std::ceil(wipe_depth / (tool_line_width(tc.new_tool) * m_extra_flow));
             int nozzle_change_line_count = tc.ramming_depth / first_ramming_width;
 
             tc.required_depth = wipe_depth + tc.ramming_depth;
             tc.wipe_length = wipe_line_count * line_len;
-            tc.wipe_volume = length_to_volume(tc.wipe_length, m_perimeter_width, info.height);
+            tc.wipe_volume = length_to_volume(tc.wipe_length, tool_line_width(tc.new_tool), info.height);
             tc.ramming_length = nozzle_change_line_count * line_len;
         }
     }
@@ -3916,8 +3916,11 @@ WipeTower2::WipeTowerInfo::ToolChange WipeTower2::set_toolchange(int old_tool, i
     float ramming_depth = num_lines * get_block_gap_width(old_tool, true);
 
     const float wipe_pw = tool_line_width(new_tool);
+    // The wipe box span is a structure quantity, independent of the outgoing tool's ramming width.
+    const float wipe_width = m_wipe_tower_width - m_perimeter_width -
+                             m_perimeter_width * m_filpar[old_tool].ramming_line_width_multiplicator;
     float wiping_depth = get_wipe_depth(wipe_volume, layer_height,
-        wipe_pw, m_extra_flow, m_extra_spacing_wipe, width);
+        wipe_pw, m_extra_flow, m_extra_spacing_wipe, wipe_width);
     float wipe_length = volume_to_length(wipe_volume, wipe_pw, layer_height) / m_extra_flow;
     WipeTowerInfo::ToolChange tool_change = WipeTowerInfo::ToolChange(old_tool, new_tool, ramming_depth + wiping_depth, ramming_depth, 0.f, wipe_volume, wipe_length);
     tool_change.ramming_length = num_lines * width;
