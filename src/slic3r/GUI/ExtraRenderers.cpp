@@ -5,6 +5,7 @@
 #include "Plater.hpp"
 #include "Widgets/ComboBox.hpp"
 
+#include <wx/app.h>
 #include <wx/dc.h>
 #ifdef wxHAS_GENERIC_DATAVIEWCTRL
 #include "wx/generic/private/markuptext.h"
@@ -336,6 +337,18 @@ wxWindow* BitmapChoiceRenderer::CreateEditorCtrl(wxWindow* parent, wxRect labelR
         // it explicitly, automatic update on KILL_FOCUS didn't work on Linux.
         this->FinishEditing();
     });
+#elif defined(__WXOSX__)
+    c_editor->Bind(wxEVT_COMBOBOX, [](wxCommandEvent& evt) { evt.StopPropagation(); });
+    // Commit when the list closes (pick or click-away) instead of waiting for a focus change,
+    // deferred because FinishEditing() tears down this editor.
+    c_editor->Bind(wxEVT_COMBOBOX_CLOSEUP, [this, c_editor](wxCommandEvent& evt) {
+        evt.StopPropagation();
+        wxTheApp->CallAfter([this, c_editor]() {
+            if (GetEditorCtrl() == c_editor)
+                FinishEditing();
+        });
+    });
+    c_editor->CallAfter([c_editor]() { c_editor->ShowDropDown(); });
 #else
     // to avoid event propagation to other sidebar items
     c_editor->Bind(wxEVT_COMBOBOX, [](wxCommandEvent& evt) { evt.StopPropagation(); });

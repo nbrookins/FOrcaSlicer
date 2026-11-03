@@ -248,18 +248,24 @@ void ComboBox::DoSetItemClientData(unsigned int n, void *data)
         datas[n] = data;
 }
 
+void ComboBox::ShowDropDown()
+{
+    if (drop_down || !drop.HasDismissLongTime())
+        return;
+    drop.autoPosition();
+    drop_down = true;
+    drop.Popup(&drop);
+    wxCommandEvent e(wxEVT_COMBOBOX_DROPDOWN);
+    GetEventHandler()->ProcessEvent(e);
+}
+
 void ComboBox::mouseDown(wxMouseEvent &event)
 {
     SetFocus();
-    if (drop_down) {
+    if (drop_down)
         drop.Hide();
-    } else if (drop.HasDismissLongTime()) {
-        drop.autoPosition();
-        drop_down = true;
-        drop.Popup(&drop);
-        wxCommandEvent e(wxEVT_COMBOBOX_DROPDOWN);
-        GetEventHandler()->ProcessEvent(e);
-    }
+    else
+        ShowDropDown();
 }
 
 void ComboBox::mouseWheelMoved(wxMouseEvent &event)

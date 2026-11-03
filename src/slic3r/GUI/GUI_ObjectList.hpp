@@ -484,6 +484,9 @@ private:
     void OnStartEditing(wxDataViewEvent &event);
 	void OnEditingStarted(wxDataViewEvent &event);
     void OnEditingDone(wxDataViewEvent &event);
+#ifdef __WXOSX__
+    void start_filament_editing(const wxDataViewItem &item);
+#endif
 
     // apply the instance transform to all volumes and reset instance transform except the offset
     void apply_object_instance_transfrom_to_all_volumes(ModelObject *model_object, bool need_update_assemble_matrix = true);

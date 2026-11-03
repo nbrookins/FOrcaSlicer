@@ -244,6 +244,17 @@ ObjectList::ObjectList(wxWindow* parent) :
 
 #ifndef __WXOSX__
         list_manipulation(mouse_pos);
+#else
+        // NSOutlineView only edits on a delayed second click of an already selected row;
+        // open the filament picker on the click that selects the row instead.
+        if (!wxGetKeyState(WXK_SHIFT) && !wxGetKeyState(WXK_CONTROL) && !multiple_selection()) {
+            wxDataViewItem    hit_item;
+            wxDataViewColumn *hit_col = nullptr;
+            HitTest(this->get_mouse_position_in_control(), hit_item, hit_col);
+            if (hit_item.IsOk() && hit_item == event.GetItem() && hit_col != nullptr &&
+                hit_col->GetModelColumn() == (unsigned int) colFilament)
+                CallAfter([this, hit_item]() { start_filament_editing(hit_item); });
+        }
 #endif //__WXOSX__
     });
 
@@ -5946,6 +5957,22 @@ void ObjectList::OnEditingStarted(wxDataViewEvent &event)
 #endif
 #endif //__WXMSW__
 }
+
+#ifdef __WXOSX__
+void ObjectList::start_filament_editing(const wxDataViewItem &item)
+{
+    if (!item.IsOk() || GetSelection() != item || !(m_objects_model->GetItemType(item) & (itObject | itVolume)))
+        return;
+    wxDataViewColumn *column = GetColumn(colFilament);
+    if (column == nullptr || column->IsHidden())
+        return;
+    wxDataViewRenderer *renderer = column->GetRenderer();
+    if (renderer == nullptr || renderer->GetEditorCtrl())
+        return;
+    if (renderer->StartEditing(item, GetItemRect(item, column)))
+        SetCustomRendererPtr(dynamic_cast<wxDataViewCustomRenderer *>(renderer));
+}
+#endif
 
 void ObjectList::OnEditingDone(wxDataViewEvent &event)
 {
