@@ -238,7 +238,10 @@ this->layer()->color_patch_loops_effective.empty() ? nullptr : &this->layer()->c
 nullptr : &this->layer()->color_patch_is_top_bottom;
     g.ext_perimeter_flow    = this->flow(frExternalPerimeter);
     g.overhang_flow         = this->bridging_flow(frPerimeter, object_config.thick_bridges);
-    g.ext_overhang_flow     = this->bridging_flow(frExternalPerimeter, object_config.thick_bridges);
+    // FOS: only with the OW/IW split active; otherwise outer overhangs keep upstream's overhang_flow.
+    if (this->region().config().inner_wall_filament.value > 0 &&
+        this->region().config().inner_wall_filament.value != this->region().config().wall_filament.value)
+        g.ext_overhang_flow = this->bridging_flow(frExternalPerimeter, object_config.thick_bridges);
     g.solid_infill_flow     = this->flow(frSolidInfill);
     
     // FOS: color patch regions always use classic generator for predictable loop count

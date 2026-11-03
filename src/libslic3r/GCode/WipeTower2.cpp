@@ -3169,14 +3169,19 @@ void WipeTower2::plan_local_z_reserve(float z_par, float layer_height_par, size_
 
     const float mini_wipe_depth = m_local_z_wipe_tower_purge_lines * m_perimeter_width * m_extra_spacing_wipe;
     const float wipe_width      = std::max(0.f, m_wipe_tower_width - 3.f * m_perimeter_width);
-    // FOS: worst case over tools - each wipe is laid at its own tool's width (tool_line_width).
-    float max_tool_pw = m_perimeter_width;
-    for (size_t tool = 0; tool < m_filpar.size(); ++tool)
-        max_tool_pw = std::max(max_tool_pw, tool_line_width(tool));
-    const float wiping_depth    = wipe_width > WT_EPSILON ?
-                                      get_wipe_depth(std::max(0.f, wipe_volume), layer_height_par, max_tool_pw, m_extra_flow,
-                                                     m_extra_spacing_wipe, wipe_width) :
-                                      0.f;
+    // FOS: worst case over tools - each wipe is laid at its own tool's width on a row shortened
+    // by wipe_row_shrink (matches set_toolchange); equals upstream when all widths match.
+    float wiping_depth = 0.f;
+    if (wipe_width > WT_EPSILON) {
+        const float volume = std::max(0.f, wipe_volume);
+        wiping_depth = get_wipe_depth(volume, layer_height_par, m_perimeter_width, m_extra_flow, m_extra_spacing_wipe, wipe_width);
+        for (size_t tool = 0; tool < m_filpar.size(); ++tool) {
+            const float span = wipe_width - wipe_row_shrink(tool);
+            if (span > WT_EPSILON)
+                wiping_depth = std::max(wiping_depth, get_wipe_depth(volume, layer_height_par, tool_line_width(tool), m_extra_flow,
+                                                                     m_extra_spacing_wipe, span));
+        }
+    }
 
     float max_ramming_depth = 0.f;
     if (wipe_width > WT_EPSILON) {
