@@ -5,6 +5,7 @@
 #include "Plater.hpp"
 #include "Widgets/ComboBox.hpp"
 
+#include <memory>
 #include <wx/app.h>
 #include <wx/dc.h>
 #ifdef wxHAS_GENERIC_DATAVIEWCTRL
@@ -338,20 +339,23 @@ wxWindow* BitmapChoiceRenderer::CreateEditorCtrl(wxWindow* parent, wxRect labelR
         this->FinishEditing();
     });
 #elif defined(__WXOSX__)
-    c_editor->Bind(wxEVT_COMBOBOX, [](wxCommandEvent& evt) { evt.StopPropagation(); });
-    // Commit when the list closes instead of waiting for a focus change; closing without a new pick
+    // Commit when the list closes instead of waiting for a focus change; closing without a pick
     // cancels, so the object is not pinned to the value it was inheriting. Deferred because
     // finishing tears down this editor.
-    const int initial_selection = c_editor->GetSelection();
-    c_editor->Bind(wxEVT_COMBOBOX_CLOSEUP, [this, c_editor, initial_selection](wxCommandEvent& evt) {
+    auto picked = std::make_shared<bool>(false);
+    c_editor->Bind(wxEVT_COMBOBOX, [picked](wxCommandEvent& evt) {
+        *picked = true;
         evt.StopPropagation();
-        wxTheApp->CallAfter([this, c_editor, initial_selection]() {
+    });
+    c_editor->Bind(wxEVT_COMBOBOX_CLOSEUP, [this, c_editor, picked](wxCommandEvent& evt) {
+        evt.StopPropagation();
+        wxTheApp->CallAfter([this, c_editor, picked]() {
             if (GetEditorCtrl() != c_editor)
                 return;
-            if (c_editor->GetSelection() == initial_selection)
-                CancelEditing();
-            else
+            if (*picked)
                 FinishEditing();
+            else
+                CancelEditing();
         });
     });
     c_editor->CallAfter([c_editor]() { c_editor->ShowDropDown(); });
