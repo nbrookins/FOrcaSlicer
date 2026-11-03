@@ -4,6 +4,7 @@
 set(DEP_WERRORS_SDK "-Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
 
 set(DEP_CMAKE_OPTS
+    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
     "-DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}"
     "-DCMAKE_OSX_DEPLOYMENT_TARGET=${DEP_OSX_TARGET}"

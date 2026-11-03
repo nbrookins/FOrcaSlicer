@@ -6381,7 +6381,9 @@ void PrintConfigDef::init_extruder_option_keys()
         "retract_lift_above",
         "retract_lift_below",
         "retract_lift_enforce",
+        "retract_length_toolchange",
         "retract_restart_extra",
+        "retract_restart_extra_toolchange",
         "retract_when_changing_layer",
         "retraction_distances_when_cut",
         "retraction_length",
@@ -6393,8 +6395,6 @@ void PrintConfigDef::init_extruder_option_keys()
         "z_hop",
         "z_hop_types",
         "z_hop_when_prime",
-        "retract_length_toolchange",
-        "retract_restart_extra_toolchange"
     };
     assert(std::is_sorted(m_extruder_retract_keys.begin(), m_extruder_retract_keys.end()));
 }

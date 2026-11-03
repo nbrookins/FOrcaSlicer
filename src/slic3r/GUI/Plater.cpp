@@ -1159,8 +1159,11 @@ Sidebar::Sidebar(Plater *parent)
             const bool got_machine_info = SSWCP::query_machine_info(host, machine_type, nozzle_diameters, device_name);
 
             const auto& sync_nozzle_slots = wxGetApp().preset_bundle->m_connect_machine_info_list;
+            // Per-head diameters in head order; empty string where the printer reported nothing.
+            std::vector<std::string> per_head_diameters = nozzle_diameters;
             if (!sync_nozzle_slots.empty()) {
                 nozzle_diameters.clear();
+                per_head_diameters.clear();
                 for (const auto& slot : sync_nozzle_slots) {
                     std::string nd = slot.nozzle_info;
                     boost::algorithm::trim(nd);
@@ -1168,6 +1171,7 @@ Sidebar::Sidebar(Plater *parent)
                         nd.resize(nd.size() - 2);
                         boost::algorithm::trim(nd);
                     }
+                    per_head_diameters.push_back(nd);
                     if (!nd.empty())
                         nozzle_diameters.push_back(nd);
                 }
@@ -1195,6 +1199,24 @@ Sidebar::Sidebar(Plater *parent)
                         res = true;
                         break;
                     }
+                }
+
+                if (res && !p->m_fos_mixed_nozzle_mode) {
+                    MessageDialog ask(wxGetApp().mainframe,
+                        _L("The printer reports different nozzle diameters per head.\n\n"
+                           "Apply each head's diameter (Mixed nozzle mode)?"),
+                        _L("Mixed Nozzle Sizes"), wxICON_QUESTION | wxYES_NO);
+                    if (auto* btn = dynamic_cast<Button*>(ask.FindWindowById(wxID_YES))) btn->SetLabel(_L("Apply per head"));
+                    if (auto* btn = dynamic_cast<Button*>(ask.FindWindowById(wxID_NO)))  btn->SetLabel(_L("Pick one"));
+                    if (ask.ShowModal() == wxID_YES)
+                        p->m_fos_mixed_nozzle_mode = true;
+                }
+
+                if (res && p->m_fos_mixed_nozzle_mode) {
+                    wxTheApp->CallAfter([this, per_head_diameters]() {
+                        apply_synced_mixed_nozzles(per_head_diameters);
+                    });
+                    return;
                 }
 
                 if (res)
@@ -2008,9 +2030,12 @@ void Sidebar::update_all_preset_comboboxes(bool reload_printer_view)
 
     if (preset_bundle.use_bbl_network()) {
         ams_btn->Show();
+        ams_btn->SetToolTip(_L("Synchronize filament list from AMS"));
         p_mainframe->set_print_button_to_default(MainFrame::PrintSelectType::ePrintPlate);
     } else {
-        ams_btn->Hide();
+        ams_btn->Show(is_snapmaker_u1);
+        if (is_snapmaker_u1)
+            ams_btn->SetToolTip(_L("Synchronize filaments from printer"));
         auto print_btn_type = MainFrame::PrintSelectType::eExportGcode;
 
         const auto& edit_preset = preset_bundle.printers.get_edited_preset();
@@ -2035,8 +2060,8 @@ void Sidebar::update_all_preset_comboboxes(bool reload_printer_view)
                 print_btn_type = preset_bundle.is_bbl_vendor() ? MainFrame::PrintSelectType::ePrintPlate :
                                                                  MainFrame::PrintSelectType::eSendGcode;
 
-                if (url.find("127.0.0.1") != std::string::npos) {
-                    url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) + "/web/flutter_web/index.html?path=3");
+                if (url.find("127.0.0.1") != std::string::npos || url.StartsWith("file://")) {
+                    url = wxGetApp().flutter_web_url("3");
                 }
             }
             
@@ -2063,8 +2088,7 @@ void Sidebar::update_all_preset_comboboxes(bool reload_printer_view)
                 if(hasOnlineMachine)
                     p->combo_printer->set_show_machine_connecting_button(true);
     
-                wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
-                                                  "/web/flutter_web/index.html?path=2");
+                wxString url = wxGetApp().flutter_web_url("2");
                 auto real_url = wxGetApp().get_international_url(url);
                 
                 if (!is_sm_page && reload_printer_view) {
@@ -2742,8 +2766,133 @@ void Sidebar::load_ams_list(std::string const &device, MachineObject* obj)
         c->update();
 }
 
+static std::string trim_nozzle_str(std::string s)
+{
+    boost::algorithm::trim(s);
+    if (s.size() > 2 && boost::iends_with(s, "mm"))
+        s.resize(s.size() - 2);
+    boost::algorithm::trim(s);
+    if (s.find('.') != std::string::npos) {
+        while (!s.empty() && s.back() == '0')
+            s.pop_back();
+        if (!s.empty() && s.back() == '.')
+            s.pop_back();
+    }
+    return s;
+}
+
+static Preset* find_machine_filament_preset(const std::string& name, const std::string& nozzle)
+{
+    auto& coll = wxGetApp().preset_bundle->filaments;
+    std::vector<std::string> names{name};
+    if (!boost::starts_with(name, "Generic ")) {
+        if (auto sp = name.find(' '); sp != std::string::npos)
+            names.push_back("Generic " + name.substr(sp + 1));
+    }
+    for (const auto& n : names) {
+        for (const auto& cand : {n + " @U1 " + nozzle + " nozzle", n + " @U1 " + nozzle, n + " @U1", n}) {
+            Preset* p = coll.find_preset(cand, false);
+            if (p && p->is_compatible)
+                return p;
+        }
+    }
+    return nullptr;
+}
+
+bool Sidebar::sync_machine_filaments()
+{
+    auto* bundle = wxGetApp().preset_bundle;
+    const auto slots = bundle->m_connect_machine_info_list;
+    BOOST_LOG_TRIVIAL(warning) << "FOS sync: filament sync requested, printer slots=" << slots.size();
+    if (slots.empty())
+        return false;
+
+    MessageDialog ask(this, _L("Sync filaments with the printer? This replaces the current filament presets and colors."),
+                      _L("Sync filaments with printer"), wxICON_QUESTION | wxYES_NO);
+    if (ask.ShowModal() != wxID_YES)
+        return true;
+
+    // Filament presets are tied to a nozzle size, so the printer's per-head nozzles must be applied first.
+    std::vector<std::string> reported_nozzles;
+    for (const auto& slot : slots)
+        reported_nozzles.push_back(trim_nozzle_str(slot.nozzle_info));
+    {
+        const auto* cur = bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+        bool        differs = false;
+        for (size_t i = 0; cur && i < reported_nozzles.size() && i < cur->values.size(); ++i)
+            if (!reported_nozzles[i].empty() &&
+                reported_nozzles[i] != trim_nozzle_str(float_to_string_decimal_point(cur->values[i], 2)))
+                differs = true;
+        if (differs)
+            apply_synced_mixed_nozzles(reported_nozzles, false);
+    }
+    bundle->update_compatible(PresetSelectCompatibleType::Never);
+
+    const auto* nd_opt    = bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+    auto*       color_opt = bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+
+    const size_t             n       = slots.size();
+    std::vector<std::string> presets = bundle->filament_presets;
+    std::vector<std::string> colors  = color_opt->values;
+    presets.resize(n, presets.empty() ? std::string() : presets.back());
+    colors.resize(n, "#FFFFFF");
+
+    wxString unmatched;
+    auto&    filament_extruder_map = wxGetApp().app_config->get_filament_extruder_map_ref();
+    for (size_t i = 0; i < n; ++i) {
+        const auto& slot = slots[i];
+        if (slot.filament_info.empty() || slot.filament_info.find("NONE") != std::string::npos)
+            continue;
+        std::string nozzle = trim_nozzle_str(slot.nozzle_info);
+        if (nozzle.empty() && nd_opt && i < nd_opt->values.size())
+            nozzle = trim_nozzle_str(float_to_string_decimal_point(nd_opt->values[i], 2));
+
+        Preset* preset = find_machine_filament_preset(slot.filament_info, nozzle);
+        BOOST_LOG_TRIVIAL(warning) << "FOS sync: head " << i + 1 << " '" << slot.filament_info << "' nozzle " << nozzle << " -> "
+                                   << (preset ? preset->name : std::string("<no compatible preset>"));
+        if (!preset) {
+            unmatched += wxString::Format("\n%d: %s (%smm)", int(i + 1), from_u8(slot.filament_info), from_u8(nozzle));
+            continue;
+        }
+        preset->is_visible = true;
+        presets[i]         = preset->name;
+        // Printer may report RGBA; filament_colour expects #RRGGBB.
+        std::string c = slot.color_info;
+        if (c.size() == 9 && c[0] == '#')
+            c.resize(7);
+        if (!c.empty())
+            colors[i] = c;
+        filament_extruder_map[int(i)] = int(i);
+    }
+
+    bundle->filament_presets = presets;
+    color_opt->values        = colors;
+    bundle->update_multi_material_filament_presets();
+
+    wxGetApp().plater()->on_filaments_change(n);
+    for (auto& c : p->combos_filament)
+        c->update();
+    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->select_preset(bundle->filament_presets[0]);
+    bundle->export_selections(*wxGetApp().app_config);
+    update_dynamic_filament_list();
+    p->m_panel_filament_content->SetMaxSize({-1, -1});
+    for (size_t i = 0; i < p->combos_filament.size(); ++i)
+        auto_calc_flushing_volumes(int(i));
+    wxGetApp().plater()->update_project_dirty_from_presets();
+
+    if (!unmatched.empty()) {
+        MessageDialog dlg(this, _L("No compatible preset found for these heads; they were left unchanged:") + unmatched,
+                          _L("Sync filaments with printer"), wxOK);
+        dlg.ShowModal();
+    }
+    return true;
+}
+
 void Sidebar::sync_ams_list()
 {
+    if (sync_machine_filaments())
+        return;
+
     // Force load ams list
     auto obj = wxGetApp().getDeviceManager()->get_selected_machine();
     if (obj)
@@ -2863,6 +3012,63 @@ void Sidebar::update_dynamic_filament_list()
     // FOS: the support list also has to rebuild when nozzle diameters change, not just when the
     // filament count does - that is what adds or removes its "Default" row.
     dynamic_filament_list_gated.update();
+}
+
+void Sidebar::apply_synced_mixed_nozzles(const std::vector<std::string>& per_head_diameters, bool notify)
+{
+    auto parse = [](const std::string& s, double& out) {
+        try { out = std::stod(s); return out > 0.; } catch (...) { return false; }
+    };
+
+    const auto& print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    const auto* wall_opt     = print_config.option<ConfigOptionInt>("wall_filament");
+    size_t      ow_idx       = wall_opt && wall_opt->value > 0 ? size_t(wall_opt->value - 1) : 0;
+
+    // Base system preset follows the outer-wall head, matching the per-head combo behaviour.
+    std::string base;
+    if (ow_idx < per_head_diameters.size() && !per_head_diameters[ow_idx].empty())
+        base = per_head_diameters[ow_idx];
+    for (size_t i = 0; base.empty() && i < per_head_diameters.size(); ++i)
+        base = per_head_diameters[i];
+    if (base.empty())
+        return;
+
+    auto preset = wxGetApp().preset_bundle->get_similar_printer_preset({}, base);
+    if (preset == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "get the similar printer preset fail (mixed nozzle sync)";
+        return;
+    }
+    preset->is_visible = true;
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->select_preset(preset->name);
+
+    auto* nd = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (nd) {
+        for (size_t i = 0; i < nd->values.size() && i < per_head_diameters.size(); ++i) {
+            double d;
+            if (parse(per_head_diameters[i], d))
+                nd->values[i] = d;
+        }
+    }
+
+    p->m_fos_mixed_nozzle_mode = true;
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->update();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->update_dirty();
+    update_all_preset_comboboxes(true);
+    update_nozzle_settings();
+    wxGetApp().preset_bundle->update_compatible(PresetSelectCompatibleType::Always);
+    update_presets(Preset::TYPE_PRINT);
+    update_presets(Preset::TYPE_FILAMENT);
+
+    BOOST_LOG_TRIVIAL(warning) << "FOS sync: applied per-head nozzles, base preset " << preset->name;
+    if (!notify)
+        return;
+
+    wxString summary;
+    for (size_t i = 0; i < per_head_diameters.size(); ++i)
+        summary += wxString::Format("%s%d: %smm", i ? ", " : "", int(i + 1),
+                                    per_head_diameters[i].empty() ? wxString("-") : wxString(per_head_diameters[i]));
+    MessageDialog done(wxGetApp().mainframe, _L("Nozzle settings synchronized per head") + "\n\n" + summary, _L("Note"), wxOK);
+    done.ShowModal();
 }
 
 void Sidebar::update_nozzle_settings(bool switch_machine)

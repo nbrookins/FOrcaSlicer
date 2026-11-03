@@ -43,6 +43,9 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/beast/core/detail/base64.hpp>
+#include <fstream>
+#include "HttpServer.hpp"
+#include <wx/filename.h>
 
 #include <wx/stdpaths.h>
 #include <wx/imagpng.h>
@@ -58,6 +61,7 @@
 #include <wx/richmsgdlg.h>
 #include <wx/log.h>
 #include <wx/intl.h>
+#include <wx/timer.h>
 
 #include <wx/dialog.h>
 #include <wx/textctrl.h>
@@ -177,6 +181,26 @@ namespace pt = boost::property_tree;
 
 namespace Slic3r {
 namespace GUI {
+
+namespace {
+class FlutterWebReloadTimer : public wxTimer
+{
+    GUI_App *app_;
+    int      attempts_{0};
+
+public:
+    explicit FlutterWebReloadTimer(GUI_App *app) : app_(app) {}
+
+    void Notify() override
+    {
+        if (app_->is_page_http_server_ready() || ++attempts_ >= 50) {
+            app_->fltviews().reload_all();
+            Stop();
+            delete this;
+        }
+    }
+};
+} // namespace
 
 void GUI_App::load_filament_hot_bed_nozzle_relations()
 {
@@ -2756,6 +2780,12 @@ bool GUI_App::on_init_inner()
     mainframe->Show(true);
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";
 
+    // Home/Device Flutter UI uses http://127.0.0.1; wait until the embedded server accepts connections.
+    CallAfter([this]() {
+        auto *timer = new FlutterWebReloadTimer(this);
+        timer->Start(200, wxTIMER_CONTINUOUS);
+    });
+
     obj_list()->set_min_height();
 
     update_mode(); // update view mode after fix of the object_list size
@@ -3647,7 +3677,7 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
     
     if (!preset_bundle->is_bbl_vendor()) {
         if (is_snapmaker_u1) {
-            wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) + "/web/flutter_web/index.html?path=2");
+            wxString url      = flutter_web_url("2");
             auto     real_url = wxGetApp().get_international_url(url);
             mainframe->load_printer_url(real_url);
         } else {
@@ -4062,6 +4092,33 @@ void GUI_App::get_login_info()
         }
         mainframe->m_webview->SetLoginPanelVisibility(true);
     }
+}
+
+namespace {
+void ensure_flutter_web_in_data_dir()
+{
+    namespace fs = boost::filesystem;
+    const auto target_path = fs::path(Slic3r::data_dir()) / "web" / "flutter_web";
+    if (fs::exists(target_path / "index.html"))
+        return;
+    const auto source_path = fs::path(Slic3r::resources_dir()) / "web" / "flutter_web";
+    if (!fs::exists(source_path))
+        return;
+    copy_directory_recursively(source_path, target_path);
+}
+
+} // namespace
+
+wxString GUI_App::flutter_web_url(const std::string& path_query) const
+{
+    ensure_flutter_web_in_data_dir();
+    return wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) +
+                              "/web/flutter_web/index.html?path=" + path_query);
+}
+
+bool GUI_App::is_page_http_server_ready()
+{
+    return m_page_http_server.is_healthy();
 }
 
 wxString GUI_App::get_international_url(const wxString& origin_url) {

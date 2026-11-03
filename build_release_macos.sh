@@ -82,7 +82,26 @@ if [ -z "$DEPS_CMAKE_GENERATOR" ]; then
 fi
 
 if [ -z "$OSX_DEPLOYMENT_TARGET" ]; then
-  export OSX_DEPLOYMENT_TARGET="12.0"
+    export OSX_DEPLOYMENT_TARGET="12.0"
+fi
+
+# MacOSX27 SDK .tbd files break linking with current CLT; prefer 26.5.
+if [ -z "${CMAKE_OSX_SYSROOT:-}" ]; then
+    for _sdk in MacOSX26.5 MacOSX15.4 MacOSX14.4; do
+        _path="/Library/Developer/CommandLineTools/SDKs/${_sdk}.sdk"
+        if [ -d "$_path" ]; then
+            export CMAKE_OSX_SYSROOT="$_path"
+            export SDKROOT="$_path"
+            break
+        fi
+    done
+fi
+
+if [ "$SLICER_CMAKE_GENERATOR" = "Xcode" ] && ! xcodebuild -version >/dev/null 2>&1; then
+    echo "Note: full Xcode not installed — using Ninja instead of Xcode for the slicer."
+    export SLICER_CMAKE_GENERATOR="Ninja Multi-Config"
+    export SLICER_BUILD_TARGET="all"
+    export DEPS_CMAKE_GENERATOR="Ninja"
 fi
 
 echo "Build params:"
@@ -91,6 +110,7 @@ echo " - BUILD_CONFIG: $BUILD_CONFIG"
 echo " - BUILD_TARGET: $BUILD_TARGET"
 echo " - CMAKE_GENERATOR: $SLICER_CMAKE_GENERATOR for Slicer, $DEPS_CMAKE_GENERATOR for deps"
 echo " - OSX_DEPLOYMENT_TARGET: $OSX_DEPLOYMENT_TARGET"
+echo " - CMAKE_OSX_SYSROOT: ${CMAKE_OSX_SYSROOT:-(default)}"
 echo
 
 # if which -s brew; then
@@ -137,7 +157,8 @@ function build_deps() {
                         -DOPENSSL_ARCH="darwin64-${_ARCH}-cc" \
                         -DCMAKE_BUILD_TYPE="$BUILD_CONFIG" \
                         -DCMAKE_OSX_ARCHITECTURES:STRING="${_ARCH}" \
-                        -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}"
+                        -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
+                        -DCMAKE_OSX_SYSROOT="${CMAKE_OSX_SYSROOT}"
                 fi
                 cmake --build . --config "$BUILD_CONFIG" --target deps
             )
@@ -182,7 +203,8 @@ function build_slicer() {
                     -DCMAKE_INSTALL_RPATH="${DEPS}/usr/local" \
                     -DCMAKE_MACOSX_BUNDLE=ON \
                     -DCMAKE_OSX_ARCHITECTURES="${_ARCH}" \
-                    -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}"
+                    -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
+                    -DCMAKE_OSX_SYSROOT="${CMAKE_OSX_SYSROOT}"
             fi
             cmake --build . --config "$BUILD_CONFIG" --target "$SLICER_BUILD_TARGET"
             # Explicitly build profile_validator if ORCA_TOOLS is enabled

@@ -17,11 +17,8 @@ END_EVENT_TABLE()
 WebPreprintDialog::WebPreprintDialog()
     : wxDialog((wxWindow*)(wxGetApp().mainframe), wxID_ANY, _L("Print preset"))
 {
-    m_prePrint_url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
-                     "/web/flutter_web/index.html?path=4");
-
-    m_preSend_url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
-                     "/web/flutter_web/index.html?path=5");
+    m_prePrint_url = wxGetApp().flutter_web_url("4");
+    m_preSend_url  = wxGetApp().flutter_web_url("5");
     SetBackgroundColour(*wxWHITE);
 
     // Create the webview
@@ -121,7 +118,7 @@ void WebPreprintDialog::load_url(wxString &url)
 {
     wxGetApp().fltviews().add_view(m_browser, url);
     m_browser->Show();
-    m_browser->LoadURL(url);
+    WebView::LoadUrl(m_browser, url);
    
     Layout();
 }

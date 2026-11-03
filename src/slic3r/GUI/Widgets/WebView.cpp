@@ -292,9 +292,11 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         webView->RegisterHandler(wxSharedPtr<wxWebViewHandler>(new wxWebViewArchiveHandler("wxfs")));
         webView->RegisterHandler(wxSharedPtr<wxWebViewHandler>(new wxWebViewFSHandler("memory")));
 #endif
-        webView->Create(parent, wxID_ANY, url2, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        webView->Create(parent, wxID_ANY, wxString("about:blank"), wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
         webView->SetUserAgent(wxString::Format("SM-Slicer/v%s (%s) Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)", SLIC3R_VERSION,
                                                Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light"));
+        if (!url.empty())
+            LoadUrl(webView, url);
 #endif
 #ifdef __WXMAC__
         WKWebView * wkWebView = (WKWebView *) webView->GetNativeBackend();
@@ -356,6 +358,16 @@ void WebView::LoadUrl(wxWebView * webView, wxString const &url)
 #endif
     if (!url2.empty()) { url2 = wxURI(url2).BuildURI(); }
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << url2.ToUTF8();
+#if defined(__WXMAC__)
+    const wxString lower = url2.Lower();
+    if (lower.StartsWith("file://") && lower.Contains("flutter_web")) {
+        WKWebView *wkWebView = (WKWebView *) webView->GetNativeBackend();
+        if (wkWebView) {
+            Slic3r::GUI::WKWebView_loadFileURLWithReadAccess(wkWebView, url2);
+            return;
+        }
+    }
+#endif
     webView->LoadURL(url2);
 }
 

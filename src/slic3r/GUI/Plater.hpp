@@ -161,10 +161,13 @@ public:
     void load_ams_list(std::string const & device, MachineObject* obj);
     std::map<int, DynamicPrintConfig> build_filament_ams_list(MachineObject* obj);
     void sync_ams_list();
+    // Snapmaker U1: apply per-head filaments reported by the printer. Returns false when no printer data.
+    bool sync_machine_filaments();
     // Orca
     void show_SEMM_buttons(bool bshow);
     void update_dynamic_filament_list();
     void update_nozzle_settings(bool switch_machine = false);
+    void apply_synced_mixed_nozzles(const std::vector<std::string>& per_head_diameters, bool notify = true);
 
     ObjectList*             obj_list();
     ObjectSettings*         obj_settings();

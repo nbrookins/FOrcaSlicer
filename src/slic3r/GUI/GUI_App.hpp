@@ -24,6 +24,7 @@
 #include "slic3r/GUI/SSWCP.hpp"
 #include "slic3r/Utils/Bonjour.hpp"
 #include "slic3r/GUI/PrinterWebView.hpp"
+#include "slic3r/GUI/Widgets/WebView.hpp"
 #include <wx/app.h>
 #include <wx/colour.h>
 #include <wx/font.h>
@@ -540,6 +541,8 @@ private:
     bool            is_user_login();
 
     wxString get_international_url(const wxString& origin_url);
+    wxString flutter_web_url(const std::string& path_query) const;
+    bool     is_page_http_server_ready();
 
     // SM
     struct SMUserInfo
@@ -932,7 +935,7 @@ public:
             for (const auto& view : webviews) {
                 auto ptr = view.first;
                 wxString new_url = app->get_international_url(view.second);
-                ptr->LoadURL(new_url);
+                WebView::LoadUrl(ptr, new_url);
             }
 
             for (const auto& panel : webview_panels) {

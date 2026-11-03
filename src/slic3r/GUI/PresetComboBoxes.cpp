@@ -1185,19 +1185,23 @@ void PlaterPresetComboBox::update()
         auto  machine_nozzles_list = wxGetApp().preset_bundle->m_connect_machine_info_list;
         m_first_ams_filament    = GetCount();
 
-        std::string currentNozzleInfo;
-        if (const auto* nd_opt = m_preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
-            nd_opt && !nd_opt->values.empty()) {
-            currentNozzleInfo = float_to_string_decimal_point(nd_opt->values.front(), 2);
-            while (!currentNozzleInfo.empty() && currentNozzleInfo.back() == '0')
-                currentNozzleInfo.pop_back();
-            if (!currentNozzleInfo.empty() && currentNozzleInfo.back() == '.')
-                currentNozzleInfo.pop_back();
-        }
-        
+        const auto* nd_opt = m_preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+        auto configured_nozzle = [nd_opt](size_t head) {
+            if (!nd_opt || nd_opt->values.empty())
+                return std::string();
+            std::string s = float_to_string_decimal_point(nd_opt->values[std::min(head, nd_opt->values.size() - 1)], 2);
+            while (!s.empty() && s.back() == '0')
+                s.pop_back();
+            if (!s.empty() && s.back() == '.')
+                s.pop_back();
+            return s;
+        };
+
         for (int i = 0; i < machine_nozzles_list.size(); i++) {
             std::string filament_name   = machine_nozzles_list[i].filament_info;
             std::string machine_nozzles = machine_nozzles_list[i].nozzle_info;
+            // Each head is compared against its own configured diameter (mixed nozzle sizes).
+            const std::string currentNozzleInfo = configured_nozzle(size_t(i));
 
             // Filter by nozzle for display only; machine_filaments / m_connect_machine_info_list stay from sync (SSWCP).
             if (currentNozzleInfo != machine_nozzles)

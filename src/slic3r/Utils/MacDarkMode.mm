@@ -2,6 +2,8 @@
 #include "../GUI/Widgets/Label.hpp"
 
 #include "wx/osx/core/cfstring.h"
+#include <wx/uri.h>
+#include <wx/url.h>
 
 #import <algorithm>
 
@@ -98,6 +100,27 @@ void WKWebView_setTransparentBackground(void * web)
     WKWebView * webView = (WKWebView*)web;
     [webView layer].backgroundColor = [NSColor clearColor].CGColor;
     [webView registerForDraggedTypes: @[NSFilenamesPboardType]];
+}
+
+void WKWebView_loadFileURLWithReadAccess(void * web, wxString const & file_url)
+{
+    WKWebView * webView = (WKWebView *) web;
+    wxString url = file_url;
+#ifdef __WIN32__
+    url.Replace("\\", "/");
+#endif
+    NSURL *fileURL = [NSURL URLWithString:wxCFStringRef(url).AsNSString()];
+    if (!fileURL || !fileURL.isFileURL) {
+        wxString path = url;
+        if (path.Lower().StartsWith("file://"))
+            path = wxURL::Unescape(wxURI(path).GetPath());
+        fileURL = [NSURL fileURLWithPath:wxCFStringRef(path).AsNSString() isDirectory:NO];
+    }
+    NSURL *dirURL = [[fileURL URLByDeletingLastPathComponent] URLByStandardizingPath];
+    if (fileURL && dirURL)
+        [webView loadFileURL:fileURL allowingReadAccessToURL:dirURL];
+    else
+        [webView loadRequest:[NSURLRequest requestWithURL:fileURL]];
 }
 
 void openFolderForFile(wxString const & file)
