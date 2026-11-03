@@ -313,12 +313,9 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     switch (wxGetApp().get_app_mode()) {
     default:
     case GUI_App::EAppMode::Editor:
+        // No SetIcon: it would replace the bundle icon with a raw bitmap that bypasses the
+        // system icon mask, so the running Dock tile would differ from Finder/Launchpad.
         m_taskbar_icon = std::make_unique<Snapmaker_OrcaTaskBarIcon>(wxTBI_DOCK);
-        // FOS: dock tile + tooltip. wxTBI_DOCK SetIcon replaces the bundle icon
-        // (Contents/Resources/Icon.icns) for the life of the process - that is why
-        // Finder showed the FOS icon while the running Dock tile showed Snapmaker art.
-        // Asset is a single 256px frame, matching what wx expects here.
-        m_taskbar_icon->SetIcon(wxIcon(Slic3r::var("FOrcaSlicer-mac_256px.ico"), wxBITMAP_TYPE_ICO), "FOrcaSlicer");
         break;
     case GUI_App::EAppMode::GCodeViewer:
         break;
