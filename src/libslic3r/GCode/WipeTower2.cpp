@@ -1567,7 +1567,7 @@ void WipeTower2::set_extruder(size_t idx, const PrintConfig& config)
     m_filpar[idx].nozzle_diameter = nozzle_diameter; // to be used in future with (non-single) multiextruder MM
     // FOS 8.5: resolved per-tool prime tower width from the nozzle notebook. 0/absent -> 0,
     // which tool_line_width() falls back to the 1.25*nozzle rule for.
-    if (idx < config.fos_nozzle_tower_line_widths.values.size())
+    if (config.has_mixed_nozzle_sizes.value && idx < config.fos_nozzle_tower_line_widths.values.size())
         m_filpar[idx].tower_line_width = float(config.fos_nozzle_tower_line_widths.get_at(idx));
 
     float max_vol_speed = float(get_value_at(config, config.filament_max_volumetric_speed, ConfigFlowDomain::Filament, idx));

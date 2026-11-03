@@ -740,7 +740,26 @@ static bool mm_paint_applies_to_parent_region(const PrintObjectRegions::LayerRan
     return root_model_part != nullptr && root_model_part->is_mm_painted();
 }
 
-PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders, bool mixed_nozzles);
+PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders, bool mixed_nozzles,
+                                                  const std::set<std::string> *inherited_explicit_keys);
+
+// FOS: explicit keys of a volume region and all its ancestors (outer modifiers, the model part and
+// its layer range), so a nested modifier or paint never restamps a value the user set further up.
+static std::set<std::string> fos_chain_explicit_keys(const PrintObjectRegions::LayerRangeRegions &layer_range, int region_id)
+{
+    std::set<std::string> keys;
+    for (int id = region_id; id >= 0 && id < int(layer_range.volume_regions.size()); ) {
+        const PrintObjectRegions::VolumeRegion &vr = layer_range.volume_regions[id];
+        if (vr.model_volume != nullptr) {
+            const std::set<std::string> k = fos_explicit_keys(*vr.model_volume, vr.model_volume->is_model_part() ? layer_range.config : nullptr);
+            keys.insert(k.begin(), k.end());
+        }
+        if (vr.parent >= id)
+            break;
+        id = vr.parent;
+    }
+    return keys;
+}
 
 void print_region_ref_inc(PrintRegion &r) { ++ r.m_ref_cnt; }
 void print_region_ref_reset(PrintRegion &r) { r.m_ref_cnt = 0; }
@@ -797,19 +816,23 @@ bool verify_update_print_object_regions(
                                 layer_range.volume_regions[next_region_id].parent == parent_region_id) {
                                 // A parent region is already overridden.
                                 ++ next_region_id;
-                            } else if (PrintObjectRegions::BoundingBox parent_bbox = find_modifier_volume_extents(layer_range, parent_region_id); parent_bbox.intersects(*bbox))
+                            } else if (PrintObjectRegions::BoundingBox parent_bbox = find_modifier_volume_extents(layer_range, parent_region_id); parent_bbox.intersects(*bbox)) {
                                 // Such parent region does not exist. If it is needed, then we need to reslice.
                                 // Only create new region for a modifier, which actually modifies config of it's parent.
-                                if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles);
+                                const std::set<std::string> inherited = mixed_nozzles ? fos_chain_explicit_keys(layer_range, parent_region_id) : std::set<std::string>();
+                                if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles, &inherited);
                                     config != parent_region.region->config())
                                     // This modifier newly overrides a region, which it did not before. We need to reslice.
                                     return false;
+                            }
                         }
                     }
                 }
+                const std::set<std::string> inherited = (mixed_nozzles && region.parent != -1) ?
+                    fos_chain_explicit_keys(layer_range, region.parent) : std::set<std::string>();
                 PrintRegionConfig cfg = region.parent == -1 ?
-                    region_config_from_model_volume(default_region_config, layer_range.config, **it_model_volume, num_extruders, mixed_nozzles) :
-                    region_config_from_model_volume(layer_range.volume_regions[region.parent].region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles);
+                    region_config_from_model_volume(default_region_config, layer_range.config, **it_model_volume, num_extruders, mixed_nozzles, nullptr) :
+                    region_config_from_model_volume(layer_range.volume_regions[region.parent].region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles, &inherited);
                 if (cfg != region.region->config()) {
                     // Region configuration changed.
                     if (print_region_ref_cnt(*region.region) == 0) {
@@ -840,7 +863,7 @@ bool verify_update_print_object_regions(
             cfg.sparse_infill_filament.value = region.extruder_id;
             // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
             if (mixed_nozzles) {
-                const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
+                const std::set<std::string> explicit_keys = fos_chain_explicit_keys(layer_range, region.parent);
                 fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
             }
             if (cfg != region.region->config()) {
@@ -1044,7 +1067,7 @@ static PrintObjectRegions* generate_print_object_regions(
                         // Add a model volume, assign an existing region or generate a new one.
                         layer_range.volume_regions.push_back({
                             &volume, -1,
-                            get_create_region(region_config_from_model_volume(default_region_config, layer_range.config, volume, num_extruders, mixed_nozzles)),
+                            get_create_region(region_config_from_model_volume(default_region_config, layer_range.config, volume, num_extruders, mixed_nozzles, nullptr)),
                             bbox
                         });
                     } else if (volume.is_negative_volume()) {
@@ -1061,7 +1084,8 @@ static PrintObjectRegions* generate_print_object_regions(
                             if (parent_volume.is_model_part() || parent_volume.is_modifier())
                                 if (PrintObjectRegions::BoundingBox parent_bbox = find_modifier_volume_extents(layer_range, parent_region_id); parent_bbox.intersects(*bbox)) {
                                     // Only create new region for a modifier, which actually modifies config of it's parent.
-                                    if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, volume, num_extruders, mixed_nozzles);
+                                    const std::set<std::string> inherited = mixed_nozzles ? fos_chain_explicit_keys(layer_range, parent_region_id) : std::set<std::string>();
+                                    if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, volume, num_extruders, mixed_nozzles, &inherited);
                                         config != parent_region.region->config()) {
                                         added = true;
                                         layer_range.volume_regions.push_back({ &volume, parent_region_id, get_create_region(std::move(config)), bbox });
@@ -1092,7 +1116,7 @@ static PrintObjectRegions* generate_print_object_regions(
                     cfg.sparse_infill_filament.value       = painted_extruder_id;
                     // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
                     if (mixed_nozzles) {
-                        const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
+                        const std::set<std::string> explicit_keys = fos_chain_explicit_keys(layer_range, parent_region_id);
                         fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
                     }
                     // Keep PrintRegion config-interned. If a painted target resolves to the same
