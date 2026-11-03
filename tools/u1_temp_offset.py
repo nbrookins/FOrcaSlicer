@@ -100,6 +100,7 @@ def main():
     base = {}        # last target set by the print (not by us) per head
     ours = {}        # last target this script set per head
     last_sent = {}   # time of last send per head (rate limit)
+    dry_logged = {}  # --dry-run: last print target reported per head (nothing is sent, so it never changes)
 
     def desired_for(head, target):
         if target <= 0:
@@ -142,6 +143,10 @@ def main():
                 continue
             if now - last_sent.get(head, -1e9) < 0.5:
                 continue  # sent very recently; give the printer a moment to apply it
+            if args.dry_run:
+                if dry_logged.get(head) == target:
+                    continue
+                dry_logged[head] = target
             cmd = f"SET_HEATER_TEMPERATURE HEATER={HEATERS[head]} TARGET={want:g}"
             print(f"[u1-temp] head {head}: print set {target:g} C -> {want:g} C "
                   f"(now {temps.get(head, 0):.0f} C){' [dry run]' if args.dry_run else ''}", flush=True)
