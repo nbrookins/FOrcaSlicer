@@ -76,7 +76,7 @@ def main():
                     help="targets below this are idle/standby and left alone (default %(default)s)")
     ap.add_argument("--include-idle", action="store_true", help="also offset idle/standby targets (never 0/off)")
     ap.add_argument("--max-temp", type=float, default=300.0, help="never set above this (default %(default)s)")
-    ap.add_argument("--interval", type=float, default=1.0, help="poll interval seconds (default %(default)s)")
+    ap.add_argument("--interval", type=float, default=0.25, help="poll interval seconds (default %(default)s)")
     ap.add_argument("--exit-when-done", action="store_true", help="exit when the print is no longer printing/paused")
     ap.add_argument("--dry-run", action="store_true", help="log what would be sent without sending")
     args = ap.parse_args()
@@ -133,7 +133,7 @@ def main():
             if want is None or abs(want - target) < 0.5:
                 ours.pop(head, None)
                 continue
-            if now - last_sent.get(head, -1e9) < 1.0:
+            if now - last_sent.get(head, -1e9) < 0.5:
                 continue  # sent very recently; give the printer a moment to apply it
             cmd = f"SET_HEATER_TEMPERATURE HEATER={HEATERS[head]} TARGET={want:g}"
             print(f"[u1-temp] head {head}: print set {target:g} C -> {want:g} C "
