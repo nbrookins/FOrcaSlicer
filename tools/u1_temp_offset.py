@@ -61,7 +61,8 @@ class Moonraker:
         data = json.dumps({"script": script}).encode()
         req = urllib.request.Request(f"{self.base}/printer/gcode/script", data=data,
                                      headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+        # Klipper runs API G-code between print commands, so this can wait a few seconds.
+        with urllib.request.urlopen(req, timeout=30.0) as r:
             return json.load(r).get("result")
 
 
@@ -89,8 +90,9 @@ def main():
         sys.exit(f"head(s) {sorted(overlap)} have both --offset and --set; pick one")
 
     mr = Moonraker(args.host, args.port)
-    last_seen = {}   # last target observed per head
+    base = {}        # last target set by the print (not by us) per head
     ours = {}        # last target this script set per head
+    last_sent = {}   # time of last send per head (rate limit)
 
     def desired_for(head, target):
         if target <= 0:
@@ -121,27 +123,28 @@ def main():
             print(f"[u1-temp] print state is {state!r}; exiting", flush=True)
             return
 
+        now = time.monotonic()
         for head, target in targets.items():
             if head in ours and abs(target - ours[head]) < 0.5:
-                last_seen[head] = target
                 continue  # still our value
-            if head in last_seen and abs(target - last_seen[head]) < 0.5:
-                continue  # unchanged since last poll
-            last_seen[head] = target
+            # Anything else was set by the print (possibly the same value again after a tool change).
+            base[head] = target
             want = desired_for(head, target)
             if want is None or abs(want - target) < 0.5:
                 ours.pop(head, None)
                 continue
+            if now - last_sent.get(head, -1e9) < 1.0:
+                continue  # sent very recently; give the printer a moment to apply it
             cmd = f"SET_HEATER_TEMPERATURE HEATER={HEATERS[head]} TARGET={want:g}"
             print(f"[u1-temp] head {head}: print set {target:g} C -> {want:g} C "
                   f"(now {temps.get(head, 0):.0f} C){' [dry run]' if args.dry_run else ''}", flush=True)
+            last_sent[head] = now
             if not args.dry_run:
                 try:
                     mr.gcode(cmd)
                     ours[head] = want
                 except (urllib.error.URLError, TimeoutError, OSError) as e:
                     print(f"[u1-temp] send failed: {e}", flush=True)
-                    last_seen.pop(head, None)  # retry next poll
         time.sleep(args.interval)
 
 
