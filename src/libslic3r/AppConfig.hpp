@@ -395,6 +395,10 @@ private:
 
 	std::map<std::string, BBLocalMachine>						m_local_machines;
 
+	// FOS: pre-2.4.1 "devices" array, kept verbatim (serialized JSON) so a save does not wipe the
+	// printer list of an older build sharing this data dir. Not used by 2.4.1 itself.
+	std::string													m_fos_legacy_devices;
+
     // 添加耗材名称映射表
     static const std::map<std::string, std::string> filament_name_map;
 

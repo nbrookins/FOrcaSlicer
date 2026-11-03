@@ -713,6 +713,8 @@ std::string AppConfig::load()
 
         // Device ownership belongs to the connection gateway. Legacy devices in
         // an existing config are intentionally ignored.
+        if (j.contains("devices") && j["devices"].is_array())
+            m_fos_legacy_devices = j["devices"].dump();
     } catch(std::exception err) {
         BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
 
@@ -876,6 +878,11 @@ void AppConfig::save()
     }
 
     j["devices"] = json::array();
+    if (!m_fos_legacy_devices.empty()) {
+        json legacy = json::parse(m_fos_legacy_devices, nullptr, false);
+        if (legacy.is_array())
+            j["devices"] = std::move(legacy);
+    }
     for (const auto& local_machine : m_local_machines) {
         json m_json;
         m_json["dev_name"]         = local_machine.second.dev_name;
