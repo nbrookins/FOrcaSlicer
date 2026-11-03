@@ -50,9 +50,6 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/beast/core/detail/base64.hpp>
-#include <fstream>
-#include "HttpServer.hpp"
-#include <wx/filename.h>
 
 #include <wx/stdpaths.h>
 #include <wx/imagpng.h>
@@ -68,7 +65,6 @@
 #include <wx/richmsgdlg.h>
 #include <wx/log.h>
 #include <wx/intl.h>
-#include <wx/timer.h>
 
 #include <wx/dialog.h>
 #include <wx/textctrl.h>
@@ -194,26 +190,6 @@ namespace pt = boost::property_tree;
 
 namespace Slic3r {
 namespace GUI {
-
-namespace {
-class FlutterWebReloadTimer : public wxTimer
-{
-    GUI_App *app_;
-    int      attempts_{0};
-
-public:
-    explicit FlutterWebReloadTimer(GUI_App *app) : app_(app) {}
-
-    void Notify() override
-    {
-        if (app_->is_page_http_server_ready() || ++attempts_ >= 50) {
-            app_->fltviews().reload_all();
-            Stop();
-            delete this;
-        }
-    }
-};
-} // namespace
 
 void GUI_App::load_filament_hot_bed_nozzle_relations()
 {
@@ -2950,12 +2926,6 @@ bool GUI_App::on_init_inner()
     mainframe->Show(true);
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";
     profiler.mark("mainframe->Show");
-
-    // Home/Device Flutter UI uses http://127.0.0.1; wait until the embedded server accepts connections.
-    CallAfter([this]() {
-        auto *timer = new FlutterWebReloadTimer(this);
-        timer->Start(200, wxTIMER_CONTINUOUS);
-    });
 
     obj_list()->set_min_height();
 

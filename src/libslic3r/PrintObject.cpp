@@ -3313,10 +3313,15 @@ void fos_stamp_per_nozzle_object(PrintObjectConfig &c)
             dst.value = arr.values[i]; dst.percent = false;
         }
     };
-    auto S = [](const ConfigOptionFloats &arr, ConfigOptionFloat &dst, int filament) {
+    // 2.4.1 stores speeds per flow variant; the per-nozzle value applies to every variant.
+    auto S = [](const ConfigOptionFloats &arr, ConfigOptionFloats &dst, int filament) {
         int i = filament - 1;
-        if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0)
-            dst.value = arr.values[i];
+        if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0) {
+            if (dst.values.empty())
+                dst.values.push_back(arr.values[i]);
+            else
+                std::fill(dst.values.begin(), dst.values.end(), arr.values[i]);
+        }
     };
     W(c.fos_nozzle_support_line_width,      c.support_line_width,      c.support_filament.value);
     S(c.fos_nozzle_support_speed,           c.support_speed,           c.support_filament.value);
@@ -3336,10 +3341,15 @@ void fos_stamp_per_nozzle_region(PrintRegionConfig &c)
             dst.value = arr.values[i]; dst.percent = false;
         }
     };
-    auto S = [](const ConfigOptionFloats &arr, ConfigOptionFloat &dst, int filament) {
+    // 2.4.1 stores speeds per flow variant; the per-nozzle value applies to every variant.
+    auto S = [](const ConfigOptionFloats &arr, ConfigOptionFloats &dst, int filament) {
         int i = filament - 1;
-        if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0)
-            dst.value = arr.values[i];
+        if (i >= 0 && i < (int)arr.values.size() && arr.values[i] > 0) {
+            if (dst.values.empty())
+                dst.values.push_back(arr.values[i]);
+            else
+                std::fill(dst.values.begin(), dst.values.end(), arr.values[i]);
+        }
     };
     const int wall   = c.wall_filament.value;
     const int inner  = c.inner_wall_filament.value;

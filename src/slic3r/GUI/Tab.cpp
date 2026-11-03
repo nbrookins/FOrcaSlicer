@@ -1111,6 +1111,8 @@ void TabPrintNozzle::fos_roll_back()
 void TabPrintNozzle::on_roll_back_value(const bool to_sys)
 {
     fos_roll_back();
+}
+
 void Tab::register_flow_variant_view(ConfigFlowDomain domain,
                                      const std::vector<PageShp>& pages,
                                      std::function<const std::vector<std::string>&()> options,

@@ -1613,6 +1613,16 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
     if (extruders.empty())
         return { L("No extrusions under current settings.") };
 
+    // FOS: Mixed Filament alternates physical filaments per layer/zone with one flow, which mixed
+    // nozzle sizes cannot honour; the two features are mutually exclusive.
+    if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
+        const size_t num_physical = m_config.filament_colour.size();
+        for (unsigned int extruder_id : extruders)
+            if (m_mixed_filament_mgr.is_mixed(extruder_id + 1, num_physical))
+                return { L("Mixed filaments (color mixing) cannot be used with mixed nozzle sizes. Use the same "
+                           "nozzle size on all heads, or remove the mixed filament from this plate.") };
+    }
+
     // FOS: with mixed nozzle sizes, support has no valid "Default" filament. Support paths are
     // generated once at slicing time with a single flow and the tool is not chosen until G-code
     // export, so a path built for one nozzle could be handed to a nozzle of a different diameter.
