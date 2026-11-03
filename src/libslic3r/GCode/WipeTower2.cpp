@@ -2416,6 +2416,8 @@ void WipeTower2::toolchange_Wipe(WipeTowerWriter2& writer, const WipeTower::box_
     writer.set_extrusion_flow(tool_flow * m_extra_flow);
     const float line_width = tool_pw * m_extra_flow;
     writer.change_analyzer_line_width(line_width);
+    // FOS: keep a wider tool's bead inside the box (no-op when tool width == structure width).
+    const float end_inset = m_perimeter_width / 2.f + wipe_row_shrink(m_current_tool) / 2.f;
 
     // Variables x_to_wipe and traversed_x are here to be able to make sure it always wipes at least
     //   the ordered volume, even if it means violating the box. This can later be removed and simply
@@ -2472,7 +2474,7 @@ void WipeTower2::toolchange_Wipe(WipeTowerWriter2& writer, const WipeTower::box_
                     writer.spiral_flat_ironing(writer.pos(), m_filpar[m_current_tool].flat_iron_area, m_perimeter_width, flat_iron_speed);
                     writer.travel(pos, wipe_speed);
                     writer.retract(-retract_length, retract_speed);
-                    writer.extrude(xr - m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                    writer.extrude(xr - end_inset, writer.y(), wipe_speed);
                 }
                 else
                 {
@@ -2487,22 +2489,22 @@ void WipeTower2::toolchange_Wipe(WipeTowerWriter2& writer, const WipeTower::box_
                     writer.spiral_flat_ironing(writer.pos(), m_filpar[m_current_tool].flat_iron_area, m_perimeter_width, flat_iron_speed);
                     writer.travel(pos, wipe_speed);
                     writer.retract(-retract_length, retract_speed);
-                    writer.extrude(xl + m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                    writer.extrude(xl + end_inset, writer.y(), wipe_speed);
                 }
             } 
             else {
                 if (m_left_to_right)
-                    writer.extrude(xr - m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                    writer.extrude(xr - end_inset, writer.y(), wipe_speed);
                 else
-                    writer.extrude(xl + m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                    writer.extrude(xl + end_inset, writer.y(), wipe_speed);
             }
         }
         else
         {
             if (m_left_to_right)
-                writer.extrude(xr - m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                writer.extrude(xr - end_inset, writer.y(), wipe_speed);
             else
-                writer.extrude(xl + m_perimeter_width / 2.f, writer.y(), wipe_speed);
+                writer.extrude(xl + end_inset, writer.y(), wipe_speed);
         }
 
         if (writer.y() + float(EPSILON) > cleaning_box.lu.y() - 0.5f * line_width)
@@ -2547,8 +2549,9 @@ void WipeTower2::toolchange_wipe_new(WipeTowerWriter2& writer,
     const float tool_pw   = tool_line_width(m_current_tool);
     const float tool_flow = tool_extrusion_flow(m_current_tool, m_layer_height);
     writer.set_extrusion_flow(tool_flow * (is_first_layer() ? 1.18f : m_extra_flow)).append("; CP TOOLCHANGE WIPE\n");
-    const float& xl = cleaning_box.ld.x();
-    const float& xr = cleaning_box.rd.x();
+    // FOS: keep a wider tool's bead inside the box (no-op when tool width == structure width).
+    const float xl = cleaning_box.ld.x() + wipe_row_shrink(m_current_tool) / 2.f;
+    const float xr = cleaning_box.rd.x() - wipe_row_shrink(m_current_tool) / 2.f;
 
     float line_width = tool_pw * m_extra_flow;
     writer.change_analyzer_line_width(line_width);
@@ -3236,7 +3239,7 @@ void WipeTower2::plan_tower_new()
         for (auto& tc : info.tool_changes) {
             float first_ramming_width = get_block_gap_width(tc.old_tool, true) / m_extra_spacing_ramming;
             tc.ramming_depth /= m_extra_spacing_ramming; // 100% fill
-            float line_len = m_wipe_tower_width - 2 * m_perimeter_width;
+            float line_len = m_wipe_tower_width - 2 * m_perimeter_width - wipe_row_shrink(tc.new_tool);
             float wipe_depth = (tc.required_depth - tc.ramming_depth);
             float wipe_line_count = std::ceil(wipe_depth / (tool_line_width(tc.new_tool) * m_extra_flow));
             int nozzle_change_line_count = tc.ramming_depth / first_ramming_width;
@@ -3250,7 +3253,7 @@ void WipeTower2::plan_tower_new()
         for (auto& tc : info.local_z_tool_changes) {
             float first_ramming_width = get_block_gap_width(tc.old_tool, true) / m_extra_spacing_ramming;
             tc.ramming_depth /= m_extra_spacing_ramming; // 100% fill
-            float line_len = m_wipe_tower_width - 2 * m_perimeter_width;
+            float line_len = m_wipe_tower_width - 2 * m_perimeter_width - wipe_row_shrink(tc.new_tool);
             float wipe_depth = (tc.required_depth - tc.ramming_depth);
             float wipe_line_count = std::ceil(wipe_depth / (tool_line_width(tc.new_tool) * m_extra_flow));
             int nozzle_change_line_count = tc.ramming_depth / first_ramming_width;
@@ -3305,6 +3308,7 @@ void WipeTower2::save_on_last_wipe()
                 // The wipe itself is laid by new_tool and must use that tool's width, matching
                 // plan_toolchange and toolchange_Wipe.
                 const float wipe_pw = tool_line_width(toolchange.new_tool);
+                width -= wipe_row_shrink(toolchange.new_tool); // wider beads end further from the box edges
 
                 float volume_to_save           = length_to_volume(finish_layer().total_extrusion_length_in_plane(), m_perimeter_width,
                                                                   m_layer_info->height);
@@ -3921,7 +3925,7 @@ WipeTower2::WipeTowerInfo::ToolChange WipeTower2::set_toolchange(int old_tool, i
 
     const float wipe_pw = tool_line_width(new_tool);
     // Same span as the cleaning box tool_change_new() emits the wipe into.
-    const float wipe_width = m_wipe_tower_width - 2 * m_perimeter_width;
+    const float wipe_width = m_wipe_tower_width - 2 * m_perimeter_width - wipe_row_shrink(new_tool);
     float wiping_depth = get_wipe_depth(wipe_volume, layer_height,
         wipe_pw, m_extra_flow, m_extra_spacing_wipe, wipe_width);
     float wipe_length = volume_to_length(wipe_volume, wipe_pw, layer_height) / m_extra_flow;

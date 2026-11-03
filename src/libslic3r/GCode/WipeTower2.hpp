@@ -386,6 +386,12 @@ private:
 			m_filpar[tool].nozzle_diameter * Width_To_Nozzle_Ratio :
 			m_perimeter_width;
 	}
+	// FOS: how much shorter each wipe row must be for `tool` so a bead wider than the structure
+	// width stays where a structure-width bead would end. 0 for tools at or below the structure width.
+	float wipe_row_shrink(size_t tool) const
+	{
+		return std::max(0.f, (tool_line_width(tool) - m_perimeter_width) * m_extra_flow);
+	}
 	float tool_extrusion_flow(size_t tool, float layer_height) const
 	{
 		const float w = tool_line_width(tool);
