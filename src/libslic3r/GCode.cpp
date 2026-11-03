@@ -6235,7 +6235,7 @@ LayerResult GCode::process_layer(const Print& print,
                                 inner_islands[island_idx].by_region.assign(print.num_print_regions(), ObjectByExtruder::Island::Region());
                             bool has_outer = false, has_inner = false;
                             for (const ExtrusionEntity* path : extrusions->entities) {
-                                if (path->role() == erExternalPerimeter) {
+                                if (fos_is_outer_wall(*path, region)) {
                                     outer_islands[island_idx].by_region[region.print_region_id()].perimeters.push_back(const_cast<ExtrusionEntity*>(path));
                                     has_outer = true;
                                 } else {

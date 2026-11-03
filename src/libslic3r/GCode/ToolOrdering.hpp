@@ -18,6 +18,12 @@ class PrintObject;
 class LayerTools;
 namespace CustomGCode { struct Item; }
 class PrintRegion;
+class ExtrusionEntity;
+
+// FOS: OW/IW split - true when `ee` belongs to the outer wall (printed by wall_filament).
+// Overhang detection re-tags unsupported segments of any loop as erOverhangPerimeter, so the
+// loop depth (inset_idx) decides those. Collections are outer if any child is.
+bool fos_is_outer_wall(const ExtrusionEntity &ee, const PrintRegion &region);
 
 // Object of this class holds information about whether an extrusion is printed immediately
 // after a toolchange (as part of infill/perimeter wiping) or not. One extrusion can be a part

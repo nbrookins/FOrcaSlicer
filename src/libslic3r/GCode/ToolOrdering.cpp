@@ -298,6 +298,22 @@ unsigned int LayerTools::wall_filament(const PrintRegion &region) const
 	return resolve_mixed_1based(id) - 1;
 }
 
+bool fos_is_outer_wall(const ExtrusionEntity &ee, const PrintRegion &region)
+{
+    if (const auto *coll = dynamic_cast<const ExtrusionEntityCollection *>(&ee)) {
+        for (const ExtrusionEntity *child : coll->entities)
+            if (fos_is_outer_wall(*child, region))
+                return true;
+        return false;
+    }
+    const ExtrusionRole role = ee.role();
+    if (role == erExternalPerimeter)
+        return true;
+    if (role == erOverhangPerimeter)
+        return ee.inset_idx >= 0 && ee.inset_idx < std::max(1, region.config().outer_wall_loops.value);
+    return false;
+}
+
 unsigned int LayerTools::inner_wall_filament(const PrintRegion &region) const
 {
     const int id = region.config().inner_wall_filament.value;
@@ -328,27 +344,14 @@ unsigned int LayerTools::extruder(const ExtrusionEntityCollection &extrusions, c
 	assert(region.config().wall_filament.value > 0);
 	assert(region.config().sparse_infill_filament.value > 0);
 	assert(region.config().solid_infill_filament.value > 0);
-    // FOS: OW/IW split - collections without an external perimeter are inner walls and print with
-    // inner_wall_filament when it is set; the outer wall stays on wall_filament.
-    auto has_external_perimeter = [](const ExtrusionEntityCollection &eec) {
-        for (const ExtrusionEntity *ee : eec.entities) {
-            if (ee->role() == erExternalPerimeter)
-                return true;
-            if (const auto *coll = dynamic_cast<const ExtrusionEntityCollection *>(ee))
-                for (const ExtrusionEntity *inner : coll->entities)
-                    if (inner->role() == erExternalPerimeter)
-                        return true;
-        }
-        return false;
-    };
-
     if (extrusions.has_infill()) {
         const ExtrusionRole role = extrusions.entities.empty() ? erNone : extrusions.entities.front()->role();
         if (internal_solid_infill_uses_sparse_filament(region, role))
             return sparse_infill_filament(region);
         return is_solid_infill(role) ? solid_infill_filament(region) : sparse_infill_filament(region);
     }
-    if (!has_external_perimeter(extrusions))
+    // FOS: OW/IW split - inner walls print with inner_wall_filament; the outer wall stays on wall_filament.
+    if (!fos_is_outer_wall(extrusions, region))
         return inner_wall_filament(region);
     return wall_filament(region);
 }
@@ -824,15 +827,18 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
                     // FOS: OW/IW split - add inner_wall_filament only when the layer has inner perimeters.
                     if (extruder_override == 0 && region.config().inner_wall_filament.value > 0 &&
                         region.config().inner_wall_filament.value != region.config().wall_filament.value) {
+                        auto is_inner = [&region](const ExtrusionEntity *e) {
+                            return is_perimeter(e->role()) && !fos_is_outer_wall(*e, region);
+                        };
                         bool has_inner_wall = false;
                         for (const ExtrusionEntity *ee : layerm->perimeters.entities) {
                             if (const auto *coll = dynamic_cast<const ExtrusionEntityCollection *>(ee)) {
                                 for (const ExtrusionEntity *path : coll->entities)
-                                    if (path->role() == erPerimeter) {
+                                    if (is_inner(path)) {
                                         has_inner_wall = true;
                                         break;
                                     }
-                            } else if (ee->role() == erPerimeter) {
+                            } else if (is_inner(ee)) {
                                 has_inner_wall = true;
                             }
                             if (has_inner_wall)
