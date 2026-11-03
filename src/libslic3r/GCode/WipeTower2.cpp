@@ -3166,22 +3166,26 @@ void WipeTower2::plan_local_z_reserve(float z_par, float layer_height_par, size_
 
     const float mini_wipe_depth = m_local_z_wipe_tower_purge_lines * m_perimeter_width * m_extra_spacing_wipe;
     const float wipe_width      = std::max(0.f, m_wipe_tower_width - 3.f * m_perimeter_width);
+    // FOS: worst case over tools - each wipe is laid at its own tool's width (tool_line_width).
+    float max_tool_pw = m_perimeter_width;
+    for (size_t tool = 0; tool < m_filpar.size(); ++tool)
+        max_tool_pw = std::max(max_tool_pw, tool_line_width(tool));
     const float wiping_depth    = wipe_width > WT_EPSILON ?
-                                      get_wipe_depth(std::max(0.f, wipe_volume), layer_height_par, m_perimeter_width, m_extra_flow,
+                                      get_wipe_depth(std::max(0.f, wipe_volume), layer_height_par, max_tool_pw, m_extra_flow,
                                                      m_extra_spacing_wipe, wipe_width) :
                                       0.f;
 
     float max_ramming_depth = 0.f;
     if (wipe_width > WT_EPSILON) {
-        for (const FilamentParameters& filament : m_filpar) {
+        for (size_t tool = 0; tool < m_filpar.size(); ++tool) {
+            const FilamentParameters& filament = m_filpar[tool];
             const bool do_ramming = (m_semm && m_enable_filament_ramming) || filament.multitool_ramming;
             if (!do_ramming || filament.ramming_speed.empty())
                 continue;
 
-            const float line_width = m_perimeter_width * filament.ramming_line_width_multiplicator;
-            const float line_step =
-                (m_perimeter_width * filament.ramming_line_width_multiplicator * filament.ramming_step_multiplicator) *
-                m_extra_spacing_ramming;
+            // FOS: ramming is laid at the outgoing tool's own width (matches toolchange_unload_new).
+            const float line_width = tool_line_width(tool) * filament.ramming_line_width_multiplicator;
+            const float line_step  = line_width * filament.ramming_step_multiplicator * m_extra_spacing_ramming;
             if (line_width <= WT_EPSILON || line_step <= WT_EPSILON)
                 continue;
 
@@ -3916,9 +3920,8 @@ WipeTower2::WipeTowerInfo::ToolChange WipeTower2::set_toolchange(int old_tool, i
     float ramming_depth = num_lines * get_block_gap_width(old_tool, true);
 
     const float wipe_pw = tool_line_width(new_tool);
-    // The wipe box span is a structure quantity, independent of the outgoing tool's ramming width.
-    const float wipe_width = m_wipe_tower_width - m_perimeter_width -
-                             m_perimeter_width * m_filpar[old_tool].ramming_line_width_multiplicator;
+    // Same span as the cleaning box tool_change_new() emits the wipe into.
+    const float wipe_width = m_wipe_tower_width - 2 * m_perimeter_width;
     float wiping_depth = get_wipe_depth(wipe_volume, layer_height,
         wipe_pw, m_extra_flow, m_extra_spacing_wipe, wipe_width);
     float wipe_length = volume_to_length(wipe_volume, wipe_pw, layer_height) / m_extra_flow;

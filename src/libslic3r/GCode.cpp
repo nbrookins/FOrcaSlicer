@@ -6212,8 +6212,9 @@ LayerResult GCode::process_layer(const Print& print,
                             !is_anything_overridden &&
                             region.config().inner_wall_filament.value != region.config().wall_filament.value &&
                             extrusions->can_sort()) {
-                            unsigned int outer_ext = (unsigned int)(region.config().wall_filament.value - 1);
-                            unsigned int inner_ext = (unsigned int)(region.config().inner_wall_filament.value - 1);
+                            // Resolve through LayerTools so mixed (virtual) filaments map to a physical head.
+                            unsigned int outer_ext = layer_tools.wall_filament(region);
+                            unsigned int inner_ext = layer_tools.inner_wall_filament(region);
                             if (!layer_tools.has_extruder(outer_ext)) outer_ext = layer_tools.extruders.back();
                             if (!layer_tools.has_extruder(inner_ext)) inner_ext = layer_tools.extruders.back();
                             // Find island index once

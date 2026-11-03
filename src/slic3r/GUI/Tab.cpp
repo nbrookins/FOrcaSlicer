@@ -39,6 +39,7 @@
 #include "GUI_App.hpp"
 #include "GUI_ObjectList.hpp"
 #include "Plater.hpp"
+#include "FlowTypeHelper.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
 #include "UnsavedChangesDialog.hpp"
@@ -4154,12 +4155,25 @@ void TabPrint::fos_resolve_nozzle_arrays()
                 opt->values[i] = v;
             }
         };
+        // 2.4.1 stores speeds per flow variant. Resolve each slot to the variant its nozzle uses;
+        // the engine stamps that value into the region that nozzle prints.
+        const std::vector<std::string> nozzle_flows = GUI::FlowType::nozzle_volume_types();
+        auto slot_variant = [&](int i) -> size_t {
+            const auto* support = m_fos_slot_configs[i].option<ConfigOptionStrings>(flow_support_key(ConfigFlowDomain::Process));
+            const std::string mode = i < (int)nozzle_flows.size() ? nozzle_flows[i] : std::string();
+            return support ? flow_variant_index(support->values, mode) : 0;
+        };
         auto write_speed = [&](const char* arr_key, const char* src_key) {
             auto* opt = m_preset_bundle->project_config.option<ConfigOptionFloats>(arr_key, true);
             opt->values.resize(n, 0.f);
-            for (int i = 0; i < n; ++i)
-                opt->values[i] = m_fos_slot_configs[i].has(src_key)
-                    ? (float)m_fos_slot_configs[i].opt_float(src_key) : 0.f;
+            for (int i = 0; i < n; ++i) {
+                float v = 0.f;
+                if (const auto* arr = m_fos_slot_configs[i].option<ConfigOptionFloats>(src_key); arr && !arr->values.empty())
+                    v = (float)arr->get_at(slot_variant(i));
+                else if (const auto* f = m_fos_slot_configs[i].option<ConfigOptionFloat>(src_key))
+                    v = (float)f->value;
+                opt->values[i] = v;
+            }
         };
         // region + object widths
         write_width("fos_nozzle_outer_wall_line_width",            "outer_wall_line_width");

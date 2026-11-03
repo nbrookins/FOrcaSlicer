@@ -298,6 +298,14 @@ unsigned int LayerTools::wall_filament(const PrintRegion &region) const
 	return resolve_mixed_1based(id) - 1;
 }
 
+unsigned int LayerTools::inner_wall_filament(const PrintRegion &region) const
+{
+    const int id = region.config().inner_wall_filament.value;
+    if (this->extruder_override != 0 || id <= 0)
+        return wall_filament(region);
+    return resolve_mixed_1based(unsigned(id)) - 1;
+}
+
 unsigned int LayerTools::sparse_infill_filament(const PrintRegion &region) const
 {
 	assert(region.config().wall_filament.value > 0);
@@ -340,8 +348,8 @@ unsigned int LayerTools::extruder(const ExtrusionEntityCollection &extrusions, c
             return sparse_infill_filament(region);
         return is_solid_infill(role) ? solid_infill_filament(region) : sparse_infill_filament(region);
     }
-    if (this->extruder_override == 0 && region.config().inner_wall_filament.value > 0 && !has_external_perimeter(extrusions))
-        return resolve_mixed_1based(region.config().inner_wall_filament.value) - 1;
+    if (!has_external_perimeter(extrusions))
+        return inner_wall_filament(region);
     return wall_filament(region);
 }
 
