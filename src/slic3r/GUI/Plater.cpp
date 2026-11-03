@@ -446,6 +446,7 @@ static void collect_filament_slots_from_config(
         "support_filament",
         "support_interface_filament",
         "wall_filament",
+        "inner_wall_filament", // FOS: OW/IW split
         "sparse_infill_filament",
         "solid_infill_filament",
         "wipe_tower_filament"
@@ -480,6 +481,7 @@ static void collect_filament_slots_from_model_config(
         "support_filament",
         "support_interface_filament",
         "wall_filament",
+        "inner_wall_filament", // FOS: OW/IW split
         "sparse_infill_filament",
         "solid_infill_filament",
         "wipe_tower_filament"

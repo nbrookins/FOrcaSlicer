@@ -1923,6 +1923,15 @@ std::vector<int> PartPlate::get_extruders(bool conside_custom_gcode) const
 		if (obj_wall_extr != 1)
 			plate_extruders.push_back(obj_wall_extr);
 
+		// FOS: OW/IW split - a filament used only for inner walls must be listed too.
+		{
+			int obj_inner_extr = glb_config.has("inner_wall_filament") ? glb_config.opt_int("inner_wall_filament") : obj_wall_extr;
+			if (const ConfigOption* inner_opt = mo->config.option("inner_wall_filament"))
+				obj_inner_extr = inner_opt->getInt();
+			if (obj_inner_extr > 1)
+				plate_extruders.push_back(obj_inner_extr);
+		}
+
 		const int object_sparse_infill_extr = resolve_sparse_infill_filament(mo->config, glb_sparse_infill_extr);
 		if (object_sparse_infill_extr != 1)
 			plate_extruders.push_back(object_sparse_infill_extr);
@@ -2066,6 +2075,15 @@ std::vector<int> PartPlate::get_extruders_under_cli(bool conside_custom_gcode, D
 				obj_wall_extr = wall_opt->getInt();
 			if (obj_wall_extr != 1)
 				plate_extruders.push_back(obj_wall_extr);
+
+			// FOS: OW/IW split - a filament used only for inner walls must be listed too.
+			{
+				int obj_inner_extr = full_config.has("inner_wall_filament") ? full_config.opt_int("inner_wall_filament") : obj_wall_extr;
+				if (const ConfigOption* inner_opt = object->config.option("inner_wall_filament"))
+					obj_inner_extr = inner_opt->getInt();
+				if (obj_inner_extr > 1)
+					plate_extruders.push_back(obj_inner_extr);
+			}
 
 			const int object_sparse_infill_extr = resolve_sparse_infill_filament(object->config, glb_sparse_infill_extr);
 			if (object_sparse_infill_extr != 1)
