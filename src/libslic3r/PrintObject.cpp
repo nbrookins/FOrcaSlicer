@@ -3366,7 +3366,8 @@ void fos_stamp_per_nozzle_region(PrintRegionConfig &c)
     S(c.fos_nozzle_internal_solid_infill_speed, c.internal_solid_infill_speed, solid);
     S(c.fos_nozzle_ironing_speed,               c.ironing_speed,               solid);
     S(c.fos_nozzle_sparse_infill_speed,         c.sparse_infill_speed,         sparse);
-    S(c.fos_nozzle_gap_infill_speed,            c.gap_infill_speed,            wall);
+    // Gap fill is emitted with the fills and printed by the sparse-infill head (GCode.cpp).
+    S(c.fos_nozzle_gap_infill_speed,            c.gap_infill_speed,            sparse);
 }
 
 static void apply_to_print_region_config(PrintRegionConfig &out, const DynamicPrintConfig &in)

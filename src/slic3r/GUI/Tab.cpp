@@ -941,7 +941,7 @@ static std::string fos_filament_key_for_feature(const std::string& opt_key)
         {"sparse_infill_speed",              "sparse_infill_filament"},
         {"internal_solid_infill_speed",      "solid_infill_filament"},
         {"top_surface_speed",                "solid_infill_filament"},
-        {"gap_infill_speed",                 "wall_filament"},
+        {"gap_infill_speed",                 "sparse_infill_filament"}, // gap fill prints with the sparse-infill head
         {"ironing_speed",                    "solid_infill_filament"},
         {"support_speed",                    "support_filament"},
         {"support_interface_speed",          "support_interface_filament"},
@@ -4260,7 +4260,7 @@ void TabPrint::fos_rebuild_merged_config()
         {"sparse_infill_speed",              "sparse_infill_filament"},
         {"internal_solid_infill_speed",      "solid_infill_filament"},
         {"top_surface_speed",                "solid_infill_filament"},
-        {"gap_infill_speed",                 "wall_filament"},
+        {"gap_infill_speed",                 "sparse_infill_filament"}, // gap fill prints with the sparse-infill head
         {"ironing_speed",                    "solid_infill_filament"},
         {"support_speed",                    "support_filament"},
         {"support_interface_speed",          "support_interface_filament"},

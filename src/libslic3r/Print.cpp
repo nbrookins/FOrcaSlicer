@@ -1616,6 +1616,11 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
 
     // FOS: Mixed Filament alternates physical filaments per layer/zone with one flow, which mixed
     // nozzle sizes cannot honour; the two features are mutually exclusive.
+    // The prime tower is printed by a physical tool; a virtual (mixed) filament id would be used
+    // directly as a tool index by ToolOrdering / WipeTower2.
+    if (has_wipe_tower() && m_config.wipe_tower_filament.value > int(m_config.filament_colour.size()))
+        return { L("The prime tower filament cannot be a mixed filament. Select a physical filament for the prime tower.") };
+
     // extruders() clamps virtual (mixed) IDs to 0, so scan the unclamped 1-based assignments.
     if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
         const size_t num_physical = m_config.filament_colour.size();
