@@ -562,7 +562,7 @@ public:
     // If ! m_slicing_params.valid, recalculate.
     void                    update_slicing_parameters();
 
-    static PrintObjectConfig object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders);
+    static PrintObjectConfig object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders, bool mixed_nozzles);
 
 private:
     void make_perimeters();

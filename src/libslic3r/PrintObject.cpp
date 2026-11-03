@@ -3285,7 +3285,7 @@ static void clamp_feature_extruder(ConfigOptionInt &opt, size_t num_extruders)
         opt.value = 1;
 }
 
-PrintObjectConfig PrintObject::object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders)
+PrintObjectConfig PrintObject::object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders, bool mixed_nozzles)
 {
     PrintObjectConfig config = default_object_config;
     {
@@ -3303,7 +3303,8 @@ PrintObjectConfig PrintObject::object_config_from_model_object(const PrintObject
     // and must NOT run on top of these. A 0 (or out-of-range) entry means "not authored":
     // leave the scalar as-is, so uncovered keys and the support_filament==0 gate degrade to
     // the region/object default.
-    {
+    // Uniform nozzles: no stamping, so 2.4.1's per-flow-variant speeds stay exactly as upstream.
+    if (mixed_nozzles) {
         const t_config_option_keys ks = object.config.get().keys();
         const std::set<std::string> explicit_keys(ks.begin(), ks.end());
         fos_stamp_per_nozzle_object(config, &default_object_config, &explicit_keys);
@@ -3319,23 +3320,29 @@ namespace {
 bool fos_width_overridden(const ConfigOptionFloats &arr, const ConfigOptionFloatOrPercent &dst,
                           const ConfigOptionFloatOrPercent *base, int prev_filament)
 {
-    if (base == nullptr || dst == *base)
+    if (base != nullptr && dst == *base)
         return false;
-    const int p = prev_filament - 1;
-    return !(p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.percent && dst.value == arr.values[p]);
+    const int  p          = prev_filament - 1;
+    const bool prev_stamp = p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.percent && dst.value == arr.values[p];
+    // No base (modifier built from its parent): only a value that is not the parent's own stamp is an override.
+    return base == nullptr ? (prev_filament > 0 && !prev_stamp) : !prev_stamp;
 }
 bool fos_speed_overridden(const ConfigOptionFloats &arr, const ConfigOptionFloats &dst, const ConfigOptionFloats *base,
                           int prev_filament)
 {
-    if (base == nullptr || dst == *base)
+    if (base != nullptr && dst == *base)
         return false;
-    const int p = prev_filament - 1;
-    return !(p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.values.empty() &&
-             std::all_of(dst.values.begin(), dst.values.end(), [&](double v) { return v == arr.values[p]; }));
+    const int  p          = prev_filament - 1;
+    const bool prev_stamp = p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.values.empty() &&
+                            std::all_of(dst.values.begin(), dst.values.end(), [&](double v) { return v == arr.values[p]; });
+    return base == nullptr ? (prev_filament > 0 && !prev_stamp) : !prev_stamp;
 }
 void fos_stamp_width(const ConfigOptionFloats &arr, ConfigOptionFloatOrPercent &dst, const ConfigOptionFloatOrPercent *base,
                      int prev_filament, int filament, bool explicit_override = false)
 {
+    // Inherited from a stamped parent for the same head: already correct (or an ancestor override).
+    if (prev_filament > 0 && prev_filament == filament)
+        return;
     if (explicit_override || fos_width_overridden(arr, dst, base, prev_filament))
         return;
     const int i = filament - 1;
@@ -3348,6 +3355,9 @@ void fos_stamp_width(const ConfigOptionFloats &arr, ConfigOptionFloatOrPercent &
 void fos_stamp_speed(const ConfigOptionFloats &arr, ConfigOptionFloats &dst, const ConfigOptionFloats *base,
                      int prev_filament, int filament, bool explicit_override = false)
 {
+    // Inherited from a stamped parent for the same head: already correct (or an ancestor override).
+    if (prev_filament > 0 && prev_filament == filament)
+        return;
     if (explicit_override || fos_speed_overridden(arr, dst, base, prev_filament))
         return;
     const int i = filament - 1;
@@ -3387,21 +3397,25 @@ void fos_stamp_per_nozzle_region(PrintRegionConfig &c, const PrintRegionConfig *
     const int inner  = c.inner_wall_filament.value;
     const int solid  = c.solid_infill_filament.value;
     const int sparse = c.sparse_infill_filament.value;
+    // At 100% density internal solid infill prints with the sparse head (PrintRegion::extruder).
+    auto fos_solid_uses_sparse = [](const PrintRegionConfig &r) { return r.sparse_infill_density.value >= 100. - EPSILON; };
+    const int int_solid = fos_solid_uses_sparse(c) ? sparse : solid;
     const int p_wall   = prev ? prev->wall_filament.value : 0;
     const int p_inner  = prev ? prev->inner_wall_filament.value : 0;
     const int p_solid  = prev ? prev->solid_infill_filament.value : 0;
     const int p_sparse = prev ? prev->sparse_infill_filament.value : 0;
+    const int p_int_solid = prev ? (fos_solid_uses_sparse(*prev) ? p_sparse : p_solid) : 0;
 #define FOS_BASE(key) (base ? &base->key : nullptr)
 #define FOS_EXPL(key) (explicit_keys != nullptr && explicit_keys->count(#key) > 0)
     fos_stamp_width(c.fos_nozzle_outer_wall_line_width,            c.outer_wall_line_width,            FOS_BASE(outer_wall_line_width),            p_wall,   wall, FOS_EXPL(outer_wall_line_width));
     fos_stamp_width(c.fos_nozzle_inner_wall_line_width,            c.inner_wall_line_width,            FOS_BASE(inner_wall_line_width),            p_inner,  inner, FOS_EXPL(inner_wall_line_width));
     fos_stamp_width(c.fos_nozzle_top_surface_line_width,           c.top_surface_line_width,           FOS_BASE(top_surface_line_width),           p_solid,  solid, FOS_EXPL(top_surface_line_width));
-    fos_stamp_width(c.fos_nozzle_internal_solid_infill_line_width, c.internal_solid_infill_line_width, FOS_BASE(internal_solid_infill_line_width), p_solid,  solid, FOS_EXPL(internal_solid_infill_line_width));
+    fos_stamp_width(c.fos_nozzle_internal_solid_infill_line_width, c.internal_solid_infill_line_width, FOS_BASE(internal_solid_infill_line_width), p_int_solid, int_solid, FOS_EXPL(internal_solid_infill_line_width));
     fos_stamp_width(c.fos_nozzle_sparse_infill_line_width,         c.sparse_infill_line_width,         FOS_BASE(sparse_infill_line_width),         p_sparse, sparse, FOS_EXPL(sparse_infill_line_width));
     fos_stamp_speed(c.fos_nozzle_outer_wall_speed,            c.outer_wall_speed,            FOS_BASE(outer_wall_speed),            p_wall,   wall, FOS_EXPL(outer_wall_speed));
     fos_stamp_speed(c.fos_nozzle_inner_wall_speed,            c.inner_wall_speed,            FOS_BASE(inner_wall_speed),            p_inner,  inner, FOS_EXPL(inner_wall_speed));
     fos_stamp_speed(c.fos_nozzle_top_surface_speed,           c.top_surface_speed,           FOS_BASE(top_surface_speed),           p_solid,  solid, FOS_EXPL(top_surface_speed));
-    fos_stamp_speed(c.fos_nozzle_internal_solid_infill_speed, c.internal_solid_infill_speed, FOS_BASE(internal_solid_infill_speed), p_solid,  solid, FOS_EXPL(internal_solid_infill_speed));
+    fos_stamp_speed(c.fos_nozzle_internal_solid_infill_speed, c.internal_solid_infill_speed, FOS_BASE(internal_solid_infill_speed), p_int_solid, int_solid, FOS_EXPL(internal_solid_infill_speed));
     fos_stamp_speed(c.fos_nozzle_ironing_speed,               c.ironing_speed,               FOS_BASE(ironing_speed),               p_solid,  solid, FOS_EXPL(ironing_speed));
     fos_stamp_speed(c.fos_nozzle_sparse_infill_speed,         c.sparse_infill_speed,         FOS_BASE(sparse_infill_speed),         p_sparse, sparse, FOS_EXPL(sparse_infill_speed));
     // Gap fill is emitted with the fills and printed by the sparse-infill head (GCode.cpp).
@@ -3445,7 +3459,7 @@ static void apply_to_print_region_config(PrintRegionConfig &out, const DynamicPr
             }
 }
 
-PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders)
+PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders, bool mixed_nozzles)
 {
     PrintRegionConfig config = default_or_parent_region_config;
     if (volume.is_model_part()) {
@@ -3472,9 +3486,15 @@ PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &defau
     // FOS 8.5: stamp per-nozzle resolved widths/speeds into the region scalars. See the
     // object-scope helper for the contract (resolved absolute mm; 0 = leave as-is; the old
     // ratio path is gone and must not re-derive on top).
-    {
+    // A model part is built from the print defaults; a modifier from its already-stamped parent,
+    // whose values carry the parent part / layer range / ancestor overrides, so the parent is
+    // passed as `prev` and only features whose head changed are restamped.
+    if (mixed_nozzles) {
         const std::set<std::string> explicit_keys = fos_explicit_keys(volume, layer_range_config);
-        fos_stamp_per_nozzle_region(config, &default_or_parent_region_config, nullptr, &explicit_keys);
+        if (volume.is_model_part())
+            fos_stamp_per_nozzle_region(config, &default_or_parent_region_config, nullptr, &explicit_keys);
+        else
+            fos_stamp_per_nozzle_region(config, nullptr, &default_or_parent_region_config, &explicit_keys);
     }
     if (config.sparse_infill_density.value < 0.00011f)
         // Switch of infill for very low infill rates, also avoid division by zero in infill generator for these very low rates.
@@ -3527,14 +3547,14 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig &full
 	default_region_config.apply(full_config, true);
     // BBS
 	size_t              filament_extruders = print_config.filament_diameter.size();
-	object_config = object_config_from_model_object(object_config, model_object, filament_extruders);
+	object_config = object_config_from_model_object(object_config, model_object, filament_extruders, print_config.has_mixed_nozzle_sizes.value);
 
 	std::vector<unsigned int> object_extruders;
 	for (const ModelVolume* model_volume : model_object.volumes)
 		if (model_volume->is_model_part()) {
 			PrintRegion::collect_object_printing_extruders(
 				print_config,
-				region_config_from_model_volume(default_region_config, nullptr, *model_volume, filament_extruders),
+				region_config_from_model_volume(default_region_config, nullptr, *model_volume, filament_extruders, print_config.has_mixed_nozzle_sizes.value),
                 object_config.brim_type != btNoBrim && object_config.brim_width > 0.,
 				object_extruders);
 			for (const std::pair<const t_layer_height_range, ModelConfig> &range_and_config : model_object.layer_config_ranges)
@@ -3543,7 +3563,7 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig &full
 					range_and_config.second.has("solid_infill_filament"))
 					PrintRegion::collect_object_printing_extruders(
 						print_config,
-						region_config_from_model_volume(default_region_config, &range_and_config.second.get(), *model_volume, filament_extruders),
+						region_config_from_model_volume(default_region_config, &range_and_config.second.get(), *model_volume, filament_extruders, print_config.has_mixed_nozzle_sizes.value),
                         object_config.brim_type != btNoBrim && object_config.brim_width > 0.,
 						object_extruders);
 		}

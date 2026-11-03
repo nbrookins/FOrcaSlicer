@@ -740,7 +740,7 @@ static bool mm_paint_applies_to_parent_region(const PrintObjectRegions::LayerRan
     return root_model_part != nullptr && root_model_part->is_mm_painted();
 }
 
-PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders);
+PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders, bool mixed_nozzles);
 
 void print_region_ref_inc(PrintRegion &r) { ++ r.m_ref_cnt; }
 void print_region_ref_reset(PrintRegion &r) { r.m_ref_cnt = 0; }
@@ -753,6 +753,7 @@ bool verify_update_print_object_regions(
     ModelVolumePtrs                     model_volumes,
     const PrintRegionConfig            &default_region_config,
     size_t                              num_extruders,
+    bool                                mixed_nozzles,
     PrintObjectRegions                 &print_object_regions,
     const std::function<void(const PrintRegionConfig&, const PrintRegionConfig&, const t_config_option_keys&)> &callback_invalidate)
 {
@@ -799,7 +800,7 @@ bool verify_update_print_object_regions(
                             } else if (PrintObjectRegions::BoundingBox parent_bbox = find_modifier_volume_extents(layer_range, parent_region_id); parent_bbox.intersects(*bbox))
                                 // Such parent region does not exist. If it is needed, then we need to reslice.
                                 // Only create new region for a modifier, which actually modifies config of it's parent.
-                                if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, **it_model_volume, num_extruders);
+                                if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles);
                                     config != parent_region.region->config())
                                     // This modifier newly overrides a region, which it did not before. We need to reslice.
                                     return false;
@@ -807,8 +808,8 @@ bool verify_update_print_object_regions(
                     }
                 }
                 PrintRegionConfig cfg = region.parent == -1 ?
-                    region_config_from_model_volume(default_region_config, layer_range.config, **it_model_volume, num_extruders) :
-                    region_config_from_model_volume(layer_range.volume_regions[region.parent].region->config(), nullptr, **it_model_volume, num_extruders);
+                    region_config_from_model_volume(default_region_config, layer_range.config, **it_model_volume, num_extruders, mixed_nozzles) :
+                    region_config_from_model_volume(layer_range.volume_regions[region.parent].region->config(), nullptr, **it_model_volume, num_extruders, mixed_nozzles);
                 if (cfg != region.region->config()) {
                     // Region configuration changed.
                     if (print_region_ref_cnt(*region.region) == 0) {
@@ -838,7 +839,7 @@ bool verify_update_print_object_regions(
             cfg.solid_infill_filament.value  = region.extruder_id;
             cfg.sparse_infill_filament.value = region.extruder_id;
             // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
-            {
+            if (mixed_nozzles) {
                 const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
                 fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
             }
@@ -983,6 +984,7 @@ static PrintObjectRegions* generate_print_object_regions(
     const PrintRegionConfig                     &default_region_config,
     const Transform3d                           &trafo,
     size_t                                       num_extruders,
+    bool                                         mixed_nozzles,
     const float                                  xy_contour_compensation,
     const std::vector<unsigned int>             &painting_extruders,
     const bool                                   has_painted_fuzzy_skin)
@@ -1042,7 +1044,7 @@ static PrintObjectRegions* generate_print_object_regions(
                         // Add a model volume, assign an existing region or generate a new one.
                         layer_range.volume_regions.push_back({
                             &volume, -1,
-                            get_create_region(region_config_from_model_volume(default_region_config, layer_range.config, volume, num_extruders)),
+                            get_create_region(region_config_from_model_volume(default_region_config, layer_range.config, volume, num_extruders, mixed_nozzles)),
                             bbox
                         });
                     } else if (volume.is_negative_volume()) {
@@ -1059,7 +1061,7 @@ static PrintObjectRegions* generate_print_object_regions(
                             if (parent_volume.is_model_part() || parent_volume.is_modifier())
                                 if (PrintObjectRegions::BoundingBox parent_bbox = find_modifier_volume_extents(layer_range, parent_region_id); parent_bbox.intersects(*bbox)) {
                                     // Only create new region for a modifier, which actually modifies config of it's parent.
-                                    if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, volume, num_extruders);
+                                    if (PrintRegionConfig config = region_config_from_model_volume(parent_region.region->config(), nullptr, volume, num_extruders, mixed_nozzles);
                                         config != parent_region.region->config()) {
                                         added = true;
                                         layer_range.volume_regions.push_back({ &volume, parent_region_id, get_create_region(std::move(config)), bbox });
@@ -1089,7 +1091,7 @@ static PrintObjectRegions* generate_print_object_regions(
                     cfg.solid_infill_filament.value = painted_extruder_id;
                     cfg.sparse_infill_filament.value       = painted_extruder_id;
                     // FOS: per-nozzle widths/speeds for the painted head; keeps the parent's user overrides.
-                    {
+                    if (mixed_nozzles) {
                         const std::set<std::string> explicit_keys = fos_explicit_keys(*parent_region.model_volume, layer_range.config);
                         fos_stamp_per_nozzle_region(cfg, &default_region_config, &parent_region.region->config(), &explicit_keys);
                     }
@@ -1347,6 +1349,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     DynamicPrintConfig   filament_overrides;
     //BBS: add plate index
     t_config_option_keys print_diff       = print_config_diffs(m_config, new_full_config, filament_overrides, this->m_plate_index);
+    // Object configs are stamped per nozzle only with mixed nozzle sizes; re-derive them when that flips.
+    const bool fos_mixed_changed = std::find(print_diff.begin(), print_diff.end(), "has_mixed_nozzle_sizes") != print_diff.end();
     t_config_option_keys full_config_diff = full_print_config_diffs(m_full_print_config, new_full_config, this->m_plate_index);
     // Collect changes to object and region configs.
     t_config_option_keys object_diff      = m_default_object_config.diff(new_full_config);
@@ -1677,8 +1681,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 			            }
                   if (object_config_changed)
                 model_object.config.assign_config(model_object_new.config);
-            if (! object_diff.empty() || object_config_changed || num_extruders_changed ) {
-                PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_total_filaments );
+            if (! object_diff.empty() || object_config_changed || num_extruders_changed || fos_mixed_changed) {
+                PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_total_filaments, m_config.has_mixed_nozzle_sizes.value);
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
                     // FOS: append color_patch keys that changed in per-object DynamicConfig
@@ -1748,7 +1752,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             auto print_object_apply_config = [this, &print_object_last, model_object, num_total_filaments ](PrintObject *print_object) {
                 print_object->config_apply(print_object_last ?
                     print_object_last->config() :
-                    PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_total_filaments ));
+                    PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_total_filaments, m_config.has_mixed_nozzle_sizes.value));
                 print_object_last = print_object;
             };
             if (old.empty()) {
@@ -1980,6 +1984,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     print_object.model_object()->volumes,
                     m_default_region_config,
                     num_total_filaments,
+                    m_config.has_mixed_nozzle_sizes.value,
                     *print_object_regions,
                     [it_print_object, it_print_object_end, &update_apply_status](const PrintRegionConfig &old_config, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
                         for (auto it = it_print_object; it != it_print_object_end; ++it)
@@ -2005,6 +2010,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 m_default_region_config,
                 model_object_status.print_instances.front().trafo,
                 num_total_filaments ,
+                m_config.has_mixed_nozzle_sizes.value,
                 print_object.is_mm_painted() ? 0.f : float(print_object.config().xy_contour_compensation.value),
                 painting_extruders,
                 print_object.is_fuzzy_skin_painted());
