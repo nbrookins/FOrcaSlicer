@@ -239,6 +239,10 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             paths.emplace_back(std::move(path));
         }
 
+        // FOS: stamp the loop depth on every path (as Arachne does) so the OW/IW split can still
+        // classify overhang-retagged segments after loops are flattened into paths (e.g. Local-Z).
+        for (ExtrusionPath &p : paths)
+            p.inset_idx = loop.depth;
         coll.append(ExtrusionLoop(std::move(paths), loop_role));
     }
     
