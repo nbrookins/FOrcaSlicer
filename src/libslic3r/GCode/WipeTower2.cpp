@@ -1897,7 +1897,8 @@ WipeTower::ToolChangeResult WipeTower2::tool_change_new(const WipeTowerInfo::Too
     writer.speed_override(100);
 
     if (new_tool != (unsigned int)-1) { // This is not the last change.
-        Vec2f initial_position = get_next_pos(cleaning_box, wipe_length, solid_toolchange);
+        // Called before the tool change, so pass the tool that will lay the wipe.
+        Vec2f initial_position = get_next_pos(cleaning_box, wipe_length, solid_toolchange, new_tool);
         writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation);
 
         writer.append(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Tower_Start) + "\n");
@@ -3252,8 +3253,10 @@ void WipeTower2::plan_tower_new()
             tc.required_depth = wipe_depth + tc.ramming_depth;
             tc.wipe_length = wipe_line_count * line_len;
             tc.wipe_volume = length_to_volume(tc.wipe_length, tool_line_width(tc.new_tool), info.height);
-            const float ramming_line_len = m_wipe_tower_width - m_perimeter_width -
-                tool_line_width(tc.old_tool) * m_filpar[tc.old_tool].ramming_line_width_multiplicator;
+            // FOS: upstream uses line_len; a wider outgoing tool rams on a correspondingly narrower box.
+            const float ramming_line_len = m_wipe_tower_width - 2 * m_perimeter_width -
+                std::max(0.f, (tool_line_width(tc.old_tool) - m_perimeter_width) *
+                                  m_filpar[tc.old_tool].ramming_line_width_multiplicator);
             tc.ramming_length = nozzle_change_line_count * ramming_line_len;
         }
 
@@ -3268,8 +3271,10 @@ void WipeTower2::plan_tower_new()
             tc.required_depth = wipe_depth + tc.ramming_depth;
             tc.wipe_length = wipe_line_count * line_len;
             tc.wipe_volume = length_to_volume(tc.wipe_length, tool_line_width(tc.new_tool), info.height);
-            const float ramming_line_len = m_wipe_tower_width - m_perimeter_width -
-                tool_line_width(tc.old_tool) * m_filpar[tc.old_tool].ramming_line_width_multiplicator;
+            // FOS: upstream uses line_len; a wider outgoing tool rams on a correspondingly narrower box.
+            const float ramming_line_len = m_wipe_tower_width - 2 * m_perimeter_width -
+                std::max(0.f, (tool_line_width(tc.old_tool) - m_perimeter_width) *
+                                  m_filpar[tc.old_tool].ramming_line_width_multiplicator);
             tc.ramming_length = nozzle_change_line_count * ramming_line_len;
         }
     }
@@ -3933,8 +3938,12 @@ WipeTower2::WipeTowerInfo::ToolChange WipeTower2::set_toolchange(int old_tool, i
     float ramming_depth = num_lines * get_block_gap_width(old_tool, true);
 
     const float wipe_pw = tool_line_width(new_tool);
-    // Same span as the cleaning box tool_change_new() emits the wipe into.
-    const float wipe_width = m_wipe_tower_width - 2 * m_perimeter_width - wipe_row_shrink(new_tool);
+    // FOS: upstream reserves the wipe against the ramming span computed with the structure width;
+    // keep that (byte-identical on uniform machines) and only subtract the extra row shortening
+    // of tools wider than the structure width.
+    const float wipe_width = m_wipe_tower_width - m_perimeter_width -
+                             m_perimeter_width * m_filpar[old_tool].ramming_line_width_multiplicator -
+                             wipe_row_shrink(new_tool);
     float wiping_depth = get_wipe_depth(wipe_volume, layer_height,
         wipe_pw, m_extra_flow, m_extra_spacing_wipe, wipe_width);
     float wipe_length = volume_to_length(wipe_volume, wipe_pw, layer_height) / m_extra_flow;
@@ -4362,13 +4371,17 @@ void WipeTower2::update_all_layer_depth(float wipe_tower_depth)
         m_wipe_tower_depth += start_offset;
 }
 
-Vec2f WipeTower2::get_next_pos(const WipeTower::box_coordinates& cleaning_box, float wipe_length, bool solid_toolchange)
+Vec2f WipeTower2::get_next_pos(const WipeTower::box_coordinates& cleaning_box, float wipe_length, bool solid_toolchange, size_t wipe_tool)
 {
     const float& xl = cleaning_box.ld.x();
     const float& xr = cleaning_box.rd.x();
-    int line_count = wipe_length / (xr - xl);
+    // FOS: rows of a wider tool are shortened by wipe_row_shrink (see toolchange_wipe_new).
+    if (wipe_tool == size_t(-1))
+        wipe_tool = m_current_tool;
+    const float shrink = wipe_row_shrink(wipe_tool);
+    int line_count = wipe_length / std::max(float(EPSILON), xr - xl - shrink);
 
-    float dy = get_block_gap_width(m_current_tool, false);
+    float dy = get_block_gap_width(int(wipe_tool), false);
     if (m_cur_layer_id == 0) {
         dy /= m_extra_spacing_wipe;
     }
@@ -4377,7 +4390,7 @@ Vec2f WipeTower2::get_next_pos(const WipeTower::box_coordinates& cleaning_box, f
 
     Vec2f res;
     int index = m_cur_layer_id % 4;
-    Vec2f offset = Vec2f{ 0, 0 };
+    Vec2f offset = Vec2f{ shrink / 2.f, 0 };
     switch (index % 4) {
     case 0:
         res = offset + cleaning_box.ld + pos_offset;

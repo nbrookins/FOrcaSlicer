@@ -252,7 +252,7 @@ private:
     void generate_wipe_tower_blocks(bool add_solid_flag);
     void update_all_layer_depth(float wipe_tower_depth);
     WipeTower::box_coordinates align_perimeter(const WipeTower::box_coordinates& perimeter_box);
-    Vec2f get_next_pos(const WipeTower::box_coordinates& cleaning_box, float wipe_length, bool solid_toolchange = false);
+    Vec2f get_next_pos(const WipeTower::box_coordinates& cleaning_box, float wipe_length, bool solid_toolchange = false, size_t wipe_tool = size_t(-1));
     int get_wall_filament_for_all_layer();
 
     struct WipeTowerInfo;
