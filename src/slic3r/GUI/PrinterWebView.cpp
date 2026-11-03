@@ -17,6 +17,11 @@
 #include "slic3r/GUI/SSWCP.hpp"
 #include "sentry_wrapper/SentryWrapper.hpp"
 
+#include <boost/nowide/fstream.hpp>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
 namespace pt = boost::property_tree;
 
 namespace Slic3r {
@@ -239,6 +244,70 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
         return;
     BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_loaded] view=device url=" << evt.GetURL().ToUTF8().data();
     SendAPIKey();
+    AutoConnectSavedDevice();
+}
+
+// FOS: the Snapmaker device page never reconnects on its own; once per app start, tap the saved
+// printer for the user. The page is a Flutter canvas, so the tap goes through Flutter's semantics
+// tree (enabled via its placeholder) and is matched by the printer's name. Best effort: if the page
+// layout changes and nothing matches, it gives up after ~30 s and the user connects manually.
+void PrinterWebView::AutoConnectSavedDevice()
+{
+    static bool attempted = false;
+    if (attempted || m_browser == nullptr || !is_u1_device_page())
+        return;
+    AppConfig *cfg = wxGetApp().app_config;
+    if (cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
+        return;
+
+    json names = json::array();
+    try {
+        boost::nowide::ifstream in(cfg->config_path());
+        json conf = json::parse(in, nullptr, false);
+        if (conf.is_object() && conf.contains("devices") && conf["devices"].is_array())
+            for (const json &dev : conf["devices"])
+                if (dev.is_object() && dev.contains("dev_name") && dev["dev_name"].is_string() && !dev["dev_name"].get<std::string>().empty())
+                    names.push_back(dev["dev_name"].get<std::string>());
+    } catch (const std::exception &e) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: cannot read saved devices: " << e.what();
+    }
+    if (names.empty())
+        return;
+    attempted = true;
+
+    const std::string script = R"((function(names) {
+    if (window.__fos_autoconnect) return;
+    window.__fos_autoconnect = true;
+    function report(status) {
+        try { window.wx.postMessage(JSON.stringify({ fos_autoconnect: status })); } catch (e) {}
+    }
+    var tries = 0;
+    function tick() {
+        tries++;
+        var ph = document.querySelector('flt-semantics-placeholder');
+        if (ph) ph.click();
+        var best = null;
+        document.querySelectorAll('[flt-tappable], [role="button"]').forEach(function(el) {
+            var label = ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).trim();
+            if (!label) return;
+            for (var i = 0; i < names.length; i++) {
+                if (label.indexOf(names[i]) >= 0 && (best === null || label.length < best.label.length))
+                    best = { el: el, label: label };
+            }
+        });
+        if (best) {
+            best.el.click();
+            report('clicked: ' + best.label.slice(0, 80));
+            return;
+        }
+        if (tries < 60) setTimeout(tick, 500);
+        else report('no matching device element after ' + tries + ' tries');
+    }
+    setTimeout(tick, 1500);
+}))" + std::string("(") + names.dump() + ");";
+
+    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: tapping saved device " << names.dump();
+    WebView::RunScript(m_browser, wxString::FromUTF8(script));
 }
 
 void PrinterWebView::OnScriptMessage(wxWebViewEvent& evt) {

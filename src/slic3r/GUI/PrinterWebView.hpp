@@ -51,6 +51,7 @@ public:
 
 private:
     void SendAPIKey();
+    void AutoConnectSavedDevice();
 
     wxWebView* m_browser;
     long m_zoomFactor;
