@@ -13,6 +13,7 @@ inline const std::vector<std::string> &mixed_filament_feature_keys()
 {
     static const std::vector<std::string> keys = {
         "wall_filament",
+        "inner_wall_filament", // FOS: OW/IW split
         "sparse_infill_filament",
         "solid_infill_filament",
         "support_filament",

@@ -2784,7 +2784,7 @@ DynamicPrintConfig PresetBundle::full_fff_config() const
         opt->value = boost::algorithm::clamp<int>(opt->value, 0, int(num_filaments));
     }
 
-    static const char* keys_1based[] = {"wall_filament", "sparse_infill_filament", "solid_infill_filament"};
+    static const char* keys_1based[] = {"wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament"};
     for (size_t i = 0; i < sizeof(keys_1based) / sizeof(keys_1based[0]); ++ i) {
         std::string key = std::string(keys_1based[i]);
         auto *opt = dynamic_cast<ConfigOptionInt*>(out.option(key, false));

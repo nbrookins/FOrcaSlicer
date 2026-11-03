@@ -187,9 +187,13 @@ struct SupportParameters {
         // absolute value authored against nozzle 1, so under mixed nozzles it has to be re-derived
         // for the nozzle that actually prints it. Both are no-ops on a uniform machine.
 	    const auto     nozzle_diameter = print_config.nozzle_diameter.get_at(object_config.support_filament - 1);
-        const coordf_t extrusion_width = fos_abs_width_for_nozzle(object_config.line_width, print_config, nozzle_diameter);
-        support_extrusion_width        = fos_abs_width_for_nozzle(object_config.support_line_width, print_config, nozzle_diameter);
-        support_extrusion_width        = support_extrusion_width > 0 ? support_extrusion_width : extrusion_width;
+        // FOS 8.5: support_line_width is stamped to absolute mm for the support nozzle, so use it
+        // as-is, matching support_material_flow() in Flow.cpp (the nozzle ratio would double-apply).
+        const ConfigOptionFloatOrPercent &raw_width =
+            (object_config.support_line_width.value > 0) ? object_config.support_line_width : object_config.line_width;
+        support_extrusion_width = raw_width.get_abs_value(nozzle_diameter);
+        if (support_extrusion_width <= 0)
+            support_extrusion_width = fos_abs_width_for_nozzle(object_config.line_width, print_config, nozzle_diameter);
 
         independent_layer_height = print_config.independent_support_layer_height;
 

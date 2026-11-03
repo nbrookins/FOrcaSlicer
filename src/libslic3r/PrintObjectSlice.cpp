@@ -4246,12 +4246,24 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
             any_enabled(&print_object.print()->config().color_patch_enabled))
             fos_cp_segmentation = segmentation;
     }
+    // Neighbour layers' region slices are rewritten inside the parallel loop, so snapshot them too.
+    std::vector<std::vector<ExPolygons>> fos_cp_region_slices;
+    if (!fos_cp_segmentation.empty()) {
+        fos_cp_region_slices.resize(print_object.layer_count());
+        for (size_t li = 0; li < print_object.layer_count(); ++li) {
+            const Layer *l = print_object.get_layer(int(li));
+            fos_cp_region_slices[li].reserve(l->region_count());
+            for (int ri = 0; ri < l->region_count(); ++ri)
+                fos_cp_region_slices[li].emplace_back(to_expolygons(l->get_region(ri)->slices.surfaces));
+        }
+    }
 
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, segmentation.size(), std::max(segmentation.size() / 128, size_t(1))),
         [&print_object,
          &segmentation,
          &fos_cp_segmentation,
+         &fos_cp_region_slices,
          &mixed_mgr,
          &mixed_zone_component_local_layer_index,
          mixed_zone_phase_slot,
@@ -4587,10 +4599,12 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
                                     // scan from object top downward to find if any layer in top zone has stolen
                                     for (int tc = fos_total_layers - 1; tc >= fos_total_layers - patch_loops && tc >= 0; --tc) {
                                         if (tc == (int)layer_id) { fos_is_top_bottom = true; break; }
-                                        const LayerRegion *tlr = print_object.get_layer(tc)->get_region(parent_layer_region_idx);
-                                        if (tlr->slices.empty()) continue;
-                                        if (!get_extents(tlr->slices.surfaces).overlap(fos_stolen_bbox)) continue;
-                                        auto ts = intersection_ex(to_expolygons(tlr->slices.surfaces), segmented.expolygons);
+                                        if (tc >= (int)fos_cp_region_slices.size() ||
+                                            parent_layer_region_idx >= (int)fos_cp_region_slices[tc].size()) continue;
+                                        const ExPolygons &tsl = fos_cp_region_slices[tc][parent_layer_region_idx];
+                                        if (tsl.empty()) continue;
+                                        if (!get_extents(tsl).overlap(fos_stolen_bbox)) continue;
+                                        auto ts = intersection_ex(tsl, segmented.expolygons);
                                         if (!ts.empty()) { fos_is_top_bottom = true; break; }
                                     }
                                 }
@@ -4598,10 +4612,12 @@ static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<
                                     // FOS: check if painted region reaches the bottom patch_loops zone
                                     for (int bc = 0; bc < patch_loops && bc < fos_total_layers; ++bc) {
                                         if (bc == (int)layer_id) { fos_is_top_bottom = true; break; }
-                                        const LayerRegion *blr = print_object.get_layer(bc)->get_region(parent_layer_region_idx);
-                                        if (blr->slices.empty()) continue;
-                                        if (!get_extents(blr->slices.surfaces).overlap(fos_stolen_bbox)) continue;
-                                        auto bs = intersection_ex(to_expolygons(blr->slices.surfaces), segmented.expolygons);
+                                        if (bc >= (int)fos_cp_region_slices.size() ||
+                                            parent_layer_region_idx >= (int)fos_cp_region_slices[bc].size()) continue;
+                                        const ExPolygons &bsl = fos_cp_region_slices[bc][parent_layer_region_idx];
+                                        if (bsl.empty()) continue;
+                                        if (!get_extents(bsl).overlap(fos_stolen_bbox)) continue;
+                                        auto bs = intersection_ex(bsl, segmented.expolygons);
                                         if (!bs.empty()) { fos_is_top_bottom = true; break; }
                                     }
                                 }

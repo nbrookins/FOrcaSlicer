@@ -6211,7 +6211,9 @@ LayerResult GCode::process_layer(const Print& print,
                         if (entity_type == ObjectByExtruder::Island::Region::PERIMETERS &&
                             !is_anything_overridden &&
                             region.config().inner_wall_filament.value != region.config().wall_filament.value &&
-                            extrusions->can_sort()) {
+                            filtered_extrusions->can_sort() && !filtered_extrusions->entities.empty()) {
+                            // Split the Local-Z/pointillism-filtered collection, not the raw one, or the
+                            // clipped mixed zones are printed again by the base pass.
                             // Resolve through LayerTools so mixed (virtual) filaments map to a physical head.
                             unsigned int outer_ext = layer_tools.wall_filament(region);
                             unsigned int inner_ext = layer_tools.inner_wall_filament(region);
@@ -6220,7 +6222,7 @@ LayerResult GCode::process_layer(const Print& print,
                             // Find island index once
                             size_t island_idx = n_slices;
                             for (size_t i = 0; i < n_slices; ++i) {
-                                if (point_inside_surface(slices_test_order[i], extrusions->first_point())) {
+                                if (entity_matches_surface(slices_test_order[i], *filtered_extrusions)) {
                                     island_idx = slices_test_order[i];
                                     break;
                                 }
@@ -6234,7 +6236,7 @@ LayerResult GCode::process_layer(const Print& print,
                             if (inner_islands[island_idx].by_region.empty())
                                 inner_islands[island_idx].by_region.assign(print.num_print_regions(), ObjectByExtruder::Island::Region());
                             bool has_outer = false, has_inner = false;
-                            for (const ExtrusionEntity* path : extrusions->entities) {
+                            for (const ExtrusionEntity* path : filtered_extrusions->entities) {
                                 if (fos_is_outer_wall(*path, region)) {
                                     outer_islands[island_idx].by_region[region.print_region_id()].perimeters.push_back(const_cast<ExtrusionEntity*>(path));
                                     has_outer = true;

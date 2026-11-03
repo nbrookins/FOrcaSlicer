@@ -73,6 +73,8 @@ public:
     Flow                         perimeter_flow;
     Flow                         ext_perimeter_flow;
     Flow                         overhang_flow;
+    // FOS: overhang flow for outer-wall loops, built for the outer-wall head (OW/IW split).
+    Flow                         ext_overhang_flow;
     Flow                         solid_infill_flow;
     const PrintRegionConfig     *config;
     const PrintObjectConfig     *object_config;

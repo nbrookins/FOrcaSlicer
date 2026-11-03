@@ -2244,7 +2244,10 @@ void TreeSupport::draw_circles()
     // FOS: was get_at(0) - hardcoded to nozzle 1. See generate_toolpaths(); same rule.
     const PrintConfig &fos_print_config = m_object->print()->config();
     const double nozzle_diameter = fos_print_config.nozzle_diameter.get_at(config.support_filament - 1);
-    const coordf_t line_width = fos_abs_width_for_nozzle(config.support_line_width, fos_print_config, nozzle_diameter);
+    // support_line_width is stamped to absolute mm for the support nozzle; use it as-is (see Flow.cpp).
+    coordf_t line_width = config.support_line_width.value > 0 ? config.support_line_width.get_abs_value(nozzle_diameter) : 0.;
+    if (line_width <= 0)
+        line_width = fos_abs_width_for_nozzle(config.support_line_width, fos_print_config, nozzle_diameter);
     const coordf_t line_width_scaled           = scale_(line_width);
     const bool with_lightning_infill = m_support_params.base_fill_pattern == ipLightning;
     coordf_t support_extrusion_width = m_support_params.support_extrusion_width;

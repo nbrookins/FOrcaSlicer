@@ -213,10 +213,14 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             // outside the grown lower slices (thus where the distance between
             // the loop centerline and original lower slices is >= half nozzle diameter
             if (remain_polines.size() != 0) {
+                // FOS: outer-wall loops overhang on the outer-wall head's nozzle.
+                const bool  use_ext_ovh = is_true_external && perimeter_generator.ext_overhang_flow.width() > 0;
+                const Flow &ovh_flow    = use_ext_ovh ? perimeter_generator.ext_overhang_flow : perimeter_generator.overhang_flow;
                 extrusion_paths_append(paths, std::move(remain_polines),
-                                       erOverhangPerimeter, perimeter_generator.mm3_per_mm_overhang(),
-                                       perimeter_generator.overhang_flow.width(),
-                                       perimeter_generator.overhang_flow.height());
+                                       erOverhangPerimeter,
+                                       use_ext_ovh ? ovh_flow.mm3_per_mm() : perimeter_generator.mm3_per_mm_overhang(),
+                                       ovh_flow.width(),
+                                       ovh_flow.height());
             }
 
             // Reapply the nearest point search for starting point.
@@ -466,7 +470,8 @@ static ExtrusionEntityCollection traverse_extrusions(const PerimeterGenerator& p
             // outside the grown lower slices (thus where the distance between
             // the loop centerline and original lower slices is >= half nozzle diameter
             extrusion_paths_append(paths, clip_extrusion(extrusion_path, lower_slices_paths, ClipperLib_Z::ctDifference), erOverhangPerimeter,
-                perimeter_generator.overhang_flow);
+                (is_external && perimeter_generator.ext_overhang_flow.width() > 0) ? perimeter_generator.ext_overhang_flow :
+                                                                                     perimeter_generator.overhang_flow);
 
             // Reapply the nearest point search for starting point.
             // We allow polyline reversal because Clipper may have randomly reversed polylines during clipping.
@@ -1796,6 +1801,9 @@ void PerimeterGenerator::process_classic()
             this->fill_surfaces->append(infill_exp, stInternalSolid);
         else if (!is_cp_region)
             this->fill_surfaces->append(infill_exp, stInternal);
+        // Upstream calls this right after appending the infill (extra_perimeters_on_overhangs).
+        if (is_cp_top_bottom || !is_cp_region)
+            apply_extra_perimeters(infill_exp);
 
         // BBS: get the no-overlap infill expolygons
         {
