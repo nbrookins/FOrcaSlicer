@@ -339,12 +339,18 @@ wxWindow* BitmapChoiceRenderer::CreateEditorCtrl(wxWindow* parent, wxRect labelR
     });
 #elif defined(__WXOSX__)
     c_editor->Bind(wxEVT_COMBOBOX, [](wxCommandEvent& evt) { evt.StopPropagation(); });
-    // Commit when the list closes (pick or click-away) instead of waiting for a focus change,
-    // deferred because FinishEditing() tears down this editor.
-    c_editor->Bind(wxEVT_COMBOBOX_CLOSEUP, [this, c_editor](wxCommandEvent& evt) {
+    // Commit when the list closes instead of waiting for a focus change; closing without a new pick
+    // cancels, so the object is not pinned to the value it was inheriting. Deferred because
+    // finishing tears down this editor.
+    const int initial_selection = c_editor->GetSelection();
+    c_editor->Bind(wxEVT_COMBOBOX_CLOSEUP, [this, c_editor, initial_selection](wxCommandEvent& evt) {
         evt.StopPropagation();
-        wxTheApp->CallAfter([this, c_editor]() {
-            if (GetEditorCtrl() == c_editor)
+        wxTheApp->CallAfter([this, c_editor, initial_selection]() {
+            if (GetEditorCtrl() != c_editor)
+                return;
+            if (c_editor->GetSelection() == initial_selection)
+                CancelEditing();
+            else
                 FinishEditing();
         });
     });

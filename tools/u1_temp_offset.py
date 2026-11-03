@@ -14,9 +14,16 @@ Examples:
 Heads are numbered 1-4 as on the printer (Klipper heaters extruder, extruder1..extruder3).
 Targets below --min-active (idle/standby, e.g. 70 C) and 0 (off) are left alone unless
 --include-idle is given. Stop with Ctrl-C; the print continues with whatever is set at that moment.
+
+Limitations: polling only sees targets, not who set them, so with --offset a print target that
+happens to equal the value this watcher last applied (e.g. print 220 -> watcher 230, later the
+print itself asks for 230) is taken as already adjusted and not offset again. --set is unaffected.
+Between the print's command and the correction the heater may briefly move toward the print's
+value. Rewriting the temperatures in the G-code before upload avoids both.
 """
 
 import argparse
+import http.client
 import json
 import sys
 import time
@@ -114,7 +121,7 @@ def main():
     while True:
         try:
             state, targets, temps = mr.query_targets()
-        except (urllib.error.URLError, TimeoutError, OSError, KeyError, ValueError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, KeyError, ValueError) as e:
             print(f"[u1-temp] query failed: {e}; retrying", flush=True)
             time.sleep(max(args.interval, 2.0))
             continue
@@ -145,7 +152,7 @@ def main():
                 ours[head] = want
                 try:
                     mr.gcode(cmd)
-                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
                     print(f"[u1-temp] send failed: {e}", flush=True)
         time.sleep(args.interval)
 
