@@ -1897,7 +1897,7 @@ WipeTower::ToolChangeResult WipeTower2::tool_change_new(const WipeTowerInfo::Too
     writer.speed_override(100);
 
     if (new_tool != (unsigned int)-1) { // This is not the last change.
-        // Called before the tool change, so pass the tool that will lay the wipe.
+        // Pass the tool that lays the wipe explicitly; the start position depends on its line width.
         Vec2f initial_position = get_next_pos(cleaning_box, wipe_length, solid_toolchange, new_tool);
         writer.set_initial_position(initial_position, m_wipe_tower_width, m_wipe_tower_depth, m_internal_rotation);
 
