@@ -1621,6 +1621,24 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
     if (has_wipe_tower() && m_config.wipe_tower_filament.value > int(m_config.filament_colour.size()))
         return { L("The prime tower filament cannot be a mixed filament. Select a physical filament for the prime tower.") };
 
+    // FOS: the OW/IW split runs after Mixed Filament's pointillism / pattern wall splitting, so a
+    // mixed filament on either wall of a split region would ignore the other wall's filament.
+    if (m_mixed_filament_mgr.enabled_count() > 0) {
+        const size_t num_physical = m_config.filament_colour.size();
+        auto is_mixed = [this, num_physical](int filament_id) {
+            return filament_id > 0 && m_mixed_filament_mgr.is_mixed(unsigned(filament_id), num_physical);
+        };
+        for (const PrintObject *object : m_objects)
+            for (size_t i = 0; i < object->num_printing_regions(); ++i) {
+                const PrintRegionConfig &rcfg = object->printing_region(i).config();
+                const int wall = rcfg.wall_filament.value, inner = rcfg.inner_wall_filament.value;
+                if (inner > 0 && inner != wall && (is_mixed(wall) || is_mixed(inner)))
+                    return { L("A mixed filament (color mixing) cannot be used for the outer or inner wall when the "
+                               "outer and inner walls use different filaments. Use the same filament for both walls, "
+                               "or a physical filament for each.") };
+            }
+    }
+
     // extruders() clamps virtual (mixed) IDs to 0, so scan the unclamped 1-based assignments.
     if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
         const size_t num_physical = m_config.filament_colour.size();

@@ -4533,10 +4533,11 @@ bool WipeTower2::need_thick_bridge_flow(float pos_y) const
 
 WipeTower::ToolChangeResult WipeTower2::finish_block(const WipeTowerBlock& block, int filament_id, bool extrude_fill)
 {
-    // FOS: the block is finished by `filament_id`, which may not be the structure tool; extrude at
-    // its own nozzle width/flow (identical to upstream when all tools share the structure width).
-    WipeTowerWriter2 writer(m_layer_height, tool_line_width(filament_id), m_gcode_flavor, m_filpar, m_enable_arc_fitting, m_printer_model);
-    writer.set_extrusion_flow(tool_extrusion_flow(filament_id, m_layer_height))
+    // FOS: the block keeps upstream's structure geometry, but is finished by `filament_id`, which may
+    // be a narrower nozzle than the structure tool - never ask it for more than its own bead.
+    // (min() == upstream when all tools share the structure width.)
+    WipeTowerWriter2 writer(m_layer_height, m_perimeter_width, m_gcode_flavor, m_filpar, m_enable_arc_fitting, m_printer_model);
+    writer.set_extrusion_flow(std::min(m_extrusion_flow, tool_extrusion_flow(filament_id, m_layer_height)))
         .set_z(m_z_pos)
         .set_initial_tool(filament_id)
         .set_y_shift(m_y_shift - (m_current_shape == SHAPE_REVERSED ? m_layer_info->toolchanges_depth() : 0.f));
@@ -4592,8 +4593,7 @@ WipeTower::ToolChangeResult WipeTower2::finish_block(const WipeTowerBlock& block
                 sparse_factor = 1.f;
             }
             float y = fill_box.ld.y() + m_perimeter_width;
-            // FOS: row count from the finishing tool's bead (rows still span the box).
-            int   n = std::max(2, int(dy / (tool_line_width(filament_id) * sparse_factor)));
+            int   n = dy / (m_perimeter_width * sparse_factor);
             float spacing = (dy - m_perimeter_width) / (n - 1);
             int   i = 0;
             for (i = 0; i < n; ++i) {
@@ -4653,16 +4653,16 @@ WipeTower::ToolChangeResult WipeTower2::finish_block(const WipeTowerBlock& block
 WipeTower::ToolChangeResult WipeTower2::finish_block_solid(const WipeTowerBlock& block, 
     int filament_id, bool extrude_fill, WipeTowerLayerType layer_type)
 {
-    // FOS: solid fill laid by `filament_id` at its own nozzle width/flow and line pitch.
-    const float fill_pw = tool_line_width(filament_id);
+    // FOS: upstream geometry (in sync with get_wall_skip_points); the finishing tool is never asked
+    // for more than its own bead (min() == upstream when all tools share the structure width).
     float layer_height = m_layer_height;
-    float e_flow = tool_extrusion_flow(filament_id, m_layer_height);
+    float e_flow = std::min(m_extrusion_flow, tool_extrusion_flow(filament_id, m_layer_height));
     if (m_cur_layer_id > 1 && block.layers_type[m_cur_layer_id - 1] == WipeTowerLayerType::Normal && m_extrusion_flow < extrusion_flow(0.2)) {
         layer_height = 0.2;
-        e_flow = tool_extrusion_flow(filament_id, 0.2f);
+        e_flow = std::min(extrusion_flow(0.2), tool_extrusion_flow(filament_id, 0.2f));
     }
 
-    WipeTowerWriter2 writer(layer_height, fill_pw, m_gcode_flavor, m_filpar, m_enable_arc_fitting, m_printer_model);
+    WipeTowerWriter2 writer(layer_height, m_perimeter_width, m_gcode_flavor, m_filpar, m_enable_arc_fitting, m_printer_model);
     writer.set_extrusion_flow(e_flow)
         .set_z(m_z_pos)
         .set_initial_tool(filament_id)
@@ -4682,9 +4682,8 @@ WipeTower::ToolChangeResult WipeTower2::finish_block_solid(const WipeTowerBlock&
         block.start_depth + block.layer_depths[m_cur_layer_id] - block.cur_depth - m_perimeter_width);
     bool toolchanges_on_layer = m_layer_info->toolchanges_depth() > WT_EPSILON;
     const float dy = (fill_box.lu.y() - fill_box.ld.y());
-    // FOS: a wider bead must not overshoot the box further than upstream's structure-width rows.
-    int   n = std::max(1, int((dy + 0.25 * m_perimeter_width - std::max(0.f, fill_pw - m_perimeter_width)) / fill_pw) + 1);
-    float spacing = fill_pw;
+    int   n = (dy + 0.25 * m_perimeter_width) / m_perimeter_width + 1;
+    float spacing = m_perimeter_width;
     Vec2f initial_pos(0, 0);
     bool up_to_down = false;
     //set initial pos 
