@@ -3314,28 +3314,26 @@ PrintObjectConfig PrintObject::object_config_from_model_object(const PrintObject
 
 namespace {
 // FOS: a value is a user override (object / volume / modifier / layer range / material) when it
-// differs from the base config it was built from AND from what a previous stamp for
-// `prev_filament` produced (painted regions start from their already-stamped parent).
-// Overridden values are left untouched by the per-nozzle stamp.
+// is not what the per-nozzle stamp produced for the config it was built from. Built from a
+// stamped parent (modifiers, paint; `prev_filament` > 0 with an authored entry): anything other
+// than the parent head's stamp is an override. Otherwise compare against the base config.
+// Explicitly set keys are handled separately (fos_explicit_keys). Overrides are left untouched.
 bool fos_width_overridden(const ConfigOptionFloats &arr, const ConfigOptionFloatOrPercent &dst,
                           const ConfigOptionFloatOrPercent *base, int prev_filament)
 {
-    if (base != nullptr && dst == *base)
-        return false;
-    const int  p          = prev_filament - 1;
-    const bool prev_stamp = p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.percent && dst.value == arr.values[p];
-    // No base (modifier built from its parent): only a value that is not the parent's own stamp is an override.
-    return base == nullptr ? (prev_filament > 0 && !prev_stamp) : !prev_stamp;
+    const int p = prev_filament - 1;
+    if (p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0)
+        return dst.percent || dst.value != arr.values[p];
+    return base != nullptr && !(dst == *base);
 }
 bool fos_speed_overridden(const ConfigOptionFloats &arr, const ConfigOptionFloats &dst, const ConfigOptionFloats *base,
                           int prev_filament)
 {
-    if (base != nullptr && dst == *base)
-        return false;
-    const int  p          = prev_filament - 1;
-    const bool prev_stamp = p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0 && !dst.values.empty() &&
-                            std::all_of(dst.values.begin(), dst.values.end(), [&](double v) { return v == arr.values[p]; });
-    return base == nullptr ? (prev_filament > 0 && !prev_stamp) : !prev_stamp;
+    const int p = prev_filament - 1;
+    if (p >= 0 && p < (int)arr.values.size() && arr.values[p] > 0)
+        return dst.values.empty() ||
+               !std::all_of(dst.values.begin(), dst.values.end(), [&](double v) { return v == arr.values[p]; });
+    return base != nullptr && !(dst == *base);
 }
 void fos_stamp_width(const ConfigOptionFloats &arr, ConfigOptionFloatOrPercent &dst, const ConfigOptionFloatOrPercent *base,
                      int prev_filament, int filament, bool explicit_override = false)
