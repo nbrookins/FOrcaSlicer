@@ -69,25 +69,35 @@ namespace {
 
 // FOS: the print page assumes one nozzle size per job: it checks every file filament against
 // nozzle_info[0] and judges materials by machine_model's "(X nozzle)". On a 0.2/0.2/0.4/0.4 printer a
-// 0.4-only job therefore failed on every head. When all heads the job uses (tool-change markers
-// included) share one size, describe the job with that size; returns one such head (0-based), or -1.
-int fos_job_single_nozzle_head(const Print *print)
+// 0.4-only job therefore failed on every head. When all heads that print material in the sliced result
+// (response "filament_used_mm") share one size, describe the job with that size; returns one such head
+// (0-based), or -1. Print::extruders() is not used: it lists head 1 for any volume without an extruder key.
+int fos_job_single_nozzle_head(const json &response, const Print *print)
 {
     if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
         return -1;
-    const std::vector<unsigned int> used     = print->extruders(true);
-    const auto                     &nozzles  = print->config().nozzle_diameter.values;
-    if (used.empty() || used.front() >= nozzles.size())
+    const auto it = response.find("filament_used_mm");
+    if (it == response.end() || !it->is_array())
         return -1;
-    for (unsigned int extruder : used)
-        if (extruder >= nozzles.size() || std::abs(nozzles[extruder] - nozzles[used.front()]) > 1e-5)
+    const auto &nozzles = print->config().nozzle_diameter.values;
+    int         head    = -1;
+    for (size_t i = 0; i < it->size(); ++i) {
+        const json &used = (*it)[i];
+        if (!used.is_number() || used.get<double>() <= 0.)
+            continue;
+        if (i >= nozzles.size())
             return -1;
-    return int(used.front());
+        if (head < 0)
+            head = int(i);
+        else if (std::abs(nozzles[i] - nozzles[head]) > 1e-5)
+            return -1;
+    }
+    return head;
 }
 
-std::string fos_job_machine_model(const std::string &preset_name, const Print *print)
+std::string fos_job_machine_model(const std::string &preset_name, const json &response, const Print *print)
 {
-    const int    head  = fos_job_single_nozzle_head(print);
+    const int    head  = fos_job_single_nozzle_head(response, print);
     const size_t open  = preset_name.rfind('(');
     const size_t close = preset_name.rfind(" nozzle)");
     if (head < 0 || open == std::string::npos || close == std::string::npos || close < open)
@@ -100,7 +110,7 @@ std::string fos_job_machine_model(const std::string &preset_name, const Print *p
 
 void fos_uniform_job_nozzles(json &response, const Print *print)
 {
-    const int head = fos_job_single_nozzle_head(print);
+    const int head = fos_job_single_nozzle_head(response, print);
     if (head < 0)
         return;
     for (const char *key : {"nozzle_info", "nozzle_diameters"}) {
@@ -2721,7 +2731,7 @@ nlohmann::json SSWCP::build_filament_mapping_json(const std::string& filename, c
             auto base_preset = wxGetApp().preset_bundle->printers.get_preset_base(current_preset);
             preset_name = base_preset->name;
         }
-        response["machine_model"] = fos_job_machine_model(preset_name, current_plate ? current_plate->fff_print() : nullptr);
+        response["machine_model"] = fos_job_machine_model(preset_name, response, current_plate ? current_plate->fff_print() : nullptr);
         fos_uniform_job_nozzles(response, current_plate ? current_plate->fff_print() : nullptr);
 
         json thumbnails = json::array();
@@ -2966,7 +2976,7 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
             auto base_preset = wxGetApp().preset_bundle->printers.get_preset_base(current_preset);
             c_preset         = base_preset->name;
         }
-        response["machine_model"] = fos_job_machine_model(c_preset, print);
+        response["machine_model"] = fos_job_machine_model(c_preset, response, print);
         fos_uniform_job_nozzles(response, print);
 
         // file cover
