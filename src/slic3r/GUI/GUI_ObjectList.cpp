@@ -1231,9 +1231,17 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
     else {
         const int     filament = extruder < 1 ? 1 : extruder;
         PresetBundle *bundle   = wxGetApp().preset_bundle;
-        // A mixed (virtual) filament must cover both walls (Print::validate), so picking one here
-        // means "print this object in it": set the whole object filament group, not just the outer wall.
-        if (bundle != nullptr && bundle->mixed_filaments.is_mixed(unsigned(filament), bundle->filament_presets.size()))
+        // A mixed (virtual) filament must cover both walls (Print::validate). Picking one here, or
+        // picking away from one, therefore sets the whole object filament group; otherwise the
+        // pick sets only the outer wall (the object identity) as before.
+        auto is_mixed = [bundle](int id) {
+            return bundle != nullptr && id > 0 && bundle->mixed_filaments.is_mixed(unsigned(id), bundle->filament_presets.size());
+        };
+        bool group_has_mixed = is_mixed(filament);
+        for (const char *key : { "wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament" })
+            if (const ConfigOption *opt = m_config->option(key); opt != nullptr && is_mixed(opt->getInt()))
+                group_has_mixed = true;
+        if (group_has_mixed)
             unify_object_filaments(*m_config, filament);
         else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
