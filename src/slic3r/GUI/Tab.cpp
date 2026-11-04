@@ -4037,7 +4037,7 @@ void TabPrint::fos_reload_slot_config(int slot_idx)
         // A genuine PRP switch (name differs) still reloads and intentionally resets to the new
         // preset. First load: stored name is empty != preset_name, so it loads.
         if (preset_name != m_fos_slot_preset_names[slot_idx]) {
-            const Preset* slot_preset = m_preset_bundle->prints.find_preset(preset_name, false);
+            const Preset* slot_preset = m_preset_bundle->prints.find_preset2(preset_name, false); // follows renamed_from
             if (!slot_preset) return;
             m_fos_slot_configs[slot_idx] = slot_preset->config;
             m_fos_slot_baselines[slot_idx] = slot_preset->config;
@@ -4106,7 +4106,7 @@ void TabPrint::fos_populate_all_slots(bool mixed_active)
         // FOS: change-guard - only reload from the PRP when the selection actually differs,
         // so a spurious populate does not wipe a slot hand-edit (AP-66 family).
         if (preset_name != m_fos_slot_preset_names[i]) {
-            const Preset* slot_preset = m_preset_bundle->prints.find_preset(preset_name, false);
+            const Preset* slot_preset = m_preset_bundle->prints.find_preset2(preset_name, false); // follows renamed_from
             if (!slot_preset) continue;
             m_fos_slot_configs[i]      = slot_preset->config;
             m_fos_slot_baselines[i]    = slot_preset->config;

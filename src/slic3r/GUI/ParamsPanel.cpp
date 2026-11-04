@@ -819,6 +819,12 @@ void ParamsPanel::update_prp_nozzle_rows(bool mixed_active)
                             .option<ConfigOptionStrings>("print_filament_presets");
                         if (pfp && i < (int)pfp->values.size() && !pfp->values[i].empty())
                             saved_pick = pfp->values[i];
+                        // Profiles renamed upstream (e.g. 2.4.1 "0.12 Fine" -> "0.12mm Standard") keep the
+                        // old name in renamed_from; follow it, or the slot silently falls back to nozzle 1.
+                        auto &prints = wxGetApp().preset_bundle->prints;
+                        if (!saved_pick.empty() && prints.find_preset(saved_pick, false) == nullptr)
+                            if (const std::string *renamed = prints.get_preset_name_renamed(saved_pick))
+                                saved_pick = *renamed;
                     }
                     std::string chosen;        // FOS: model-compatible match (preferred)
                     std::string fallback;      // FOS: diameter-only match (used iff no compatible)
