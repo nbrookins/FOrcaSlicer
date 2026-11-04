@@ -2213,7 +2213,9 @@ void MixedFilamentDialog::update_compatibility_warning()
         }
     }
 
-    if (!is_filament_compatible(fids)) {
+    if (!is_filament_mix_allowed(fids)) {
+        set_error(_L("High-temperature and low-temperature filaments cannot be mixed. Please select filaments that print at similar temperatures."));
+    } else if (!is_filament_compatible(fids)) {
         // FOS: different materials may be mixed (each layer prints on its own head); warn about adhesion.
         if (auto pair = find_incompatible_filament_pair(fids))
             display_warning(wxString::Format(_L("Filament %d and Filament %d are different materials. Layers will alternate between them; check that they bond to each other."), pair->first, pair->second));

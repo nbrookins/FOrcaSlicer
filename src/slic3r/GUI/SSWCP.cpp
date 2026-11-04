@@ -114,13 +114,10 @@ std::string fos_job_machine_model(const std::string &preset_name, const json &re
 void fos_uniform_job_nozzles(json &response, const Print *print)
 {
     const int head = fos_job_single_nozzle_head(response, print);
-    if (head == FOS_JOB_MIXED_NOZZLES) {
-        // Heads of different sizes: no single value passes the page's nozzle_info[0] comparison. Without
-        // the lists the page skips it (the G-code's per_head nozzle line does the same for the firmware).
-        response.erase("nozzle_info");
-        response.erase("nozzle_diameters");
-        return;
-    }
+    // Heads of different sizes keep the real per-head lists: FOrca's flutter_web bundle (prepare_print,
+    // main.dart.js aTZ) is patched to check each file filament against its own entry, so mapping a
+    // filament onto a head of another nozzle size stays blocked; the firmware skips its single-size
+    // check through the G-code's per_head nozzle line.
     if (head < 0)
         return;
     for (const char *key : {"nozzle_info", "nozzle_diameters"}) {

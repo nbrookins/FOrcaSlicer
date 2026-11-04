@@ -1265,7 +1265,31 @@ bool is_filament_compatible(const MixedFilament& mf)
 bool is_filament_mix_allowed(const MixedFilament& mf)
 {
     std::vector<unsigned int> fids;
-    return mixed_filament_physical_ids(mf, fids);
+    return mixed_filament_physical_ids(mf, fids) && is_filament_mix_allowed(fids);
+}
+
+bool is_filament_mix_allowed(const std::vector<unsigned int>& fids)
+{
+    if (is_filament_compatible(fids))
+        return true;
+    // Plater's high/low-temperature plate check only sees physical slots, not a mix's components, so a
+    // cross-material mix must stay within one temperature class itself (PLA + TPU yes, ABS + PLA no).
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr)
+        return false;
+    std::optional<bool> high;
+    for (unsigned int fid : fids) {
+        if (fid >= bundle->filament_presets.size())
+            return false;
+        const Preset* preset = bundle->filaments.find_preset(bundle->filament_presets[fid], true);
+        if (preset == nullptr)
+            return false;
+        const bool is_high = preset->config.opt_bool("filament_is_high_temperature", 0);
+        if (high && *high != is_high)
+            return false;
+        high = is_high;
+    }
+    return true;
 }
 
 // 0-based physical filament ids of a mix; false if the mix is malformed.
