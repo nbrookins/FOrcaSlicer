@@ -875,14 +875,20 @@ std::vector<unsigned int> MixedFilamentManager::physical_components(unsigned int
         add(filament_id);
         return out;
     }
-    add(mf->component_a);
-    add(mf->component_b);
-    for (unsigned int id : decode_gradient_component_ids(mf->gradient_component_ids, num_physical))
-        add(id);
-    if (!mf->manual_pattern.empty())
+    // Same precedence as resolve(): a manual pattern is authoritative (cycle rows keep placeholder
+    // components 1/2) and falls back to component_a; otherwise both components plus gradient IDs.
+    if (!mf->manual_pattern.empty()) {
         for (const std::string &group : split_pattern_groups(mf->manual_pattern))
             for (const std::string &token : split_pattern_group_to_tokens(group, num_physical))
                 add(physical_filament_from_token(token, *mf, num_physical));
+        if (out.empty())
+            add(mf->component_a);
+    } else {
+        add(mf->component_a);
+        add(mf->component_b);
+        for (unsigned int id : decode_gradient_component_ids(mf->gradient_component_ids, num_physical))
+            add(id);
+    }
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;

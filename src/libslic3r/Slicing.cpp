@@ -28,6 +28,8 @@ static const double LAYER_HEIGHT_CHANGE_STEP = 0.04;
 // Minimum layer height for the variable layer height algorithm.
 inline coordf_t min_layer_height_from_nozzle(const PrintConfig &print_config, int idx_nozzle)
 {
+    // FOS: a mapped mixed filament uses its head's limits; unchanged for physical IDs and uniform nozzles.
+    idx_nozzle = fos_nozzle_head(print_config, idx_nozzle);
     coordf_t min_layer_height = print_config.min_layer_height.get_at(idx_nozzle - 1);
     return (min_layer_height == 0.) ? MIN_LAYER_HEIGHT_DEFAULT : std::max(MIN_LAYER_HEIGHT, min_layer_height);
 }
@@ -37,6 +39,7 @@ inline coordf_t min_layer_height_from_nozzle(const PrintConfig &print_config, in
 inline coordf_t max_layer_height_from_nozzle(const PrintConfig &print_config, int idx_nozzle)
 {
     coordf_t min_layer_height = min_layer_height_from_nozzle(print_config, idx_nozzle);
+    idx_nozzle = fos_nozzle_head(print_config, idx_nozzle);
     coordf_t max_layer_height = print_config.max_layer_height.get_at(idx_nozzle - 1);
     coordf_t nozzle_dmr       = print_config.nozzle_diameter.get_at(idx_nozzle - 1);
     return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);

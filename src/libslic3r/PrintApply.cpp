@@ -1276,7 +1276,7 @@ static bool same_layer_pointillism_enabled(const MixedFilamentManager &mixed_mgr
 // share a nozzle size), and extend the per-nozzle fos_nozzle_* arrays with that head's values so the
 // per-nozzle stamp indexes mixed IDs like physical ones. Runs on new_full_config before any diff, so
 // it takes part in the normal change detection. Uniform nozzles: empty mapping, arrays untouched.
-static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg)
+static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg, const MixedFilamentManager &current)
 {
     std::vector<int> heads;
     size_t           num_physical  = 0;
@@ -1288,7 +1288,9 @@ static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg)
         if (const auto *c = cfg.option<ConfigOptionStrings>("filament_colour"))
             colours = c->values;
         colours.resize(num_physical, "#26A69A");
-        MixedFilamentManager mgr;
+        // Start from Print's own manager: auto_generate() keeps each auto row's enabled/deleted
+        // state from the previous apply, so a fresh manager could number virtual IDs differently.
+        MixedFilamentManager mgr = current;
         mgr.clear_custom_entries();
         mgr.auto_generate(colours);
         if (cfg.has("mixed_filament_definitions"))
@@ -1391,7 +1393,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", i=%1%, key=%2%")%i %changed_keys[i];
         }
     }
-    fos_prepare_mixed_nozzle_heads(new_full_config);
+    fos_prepare_mixed_nozzle_heads(new_full_config, m_mixed_filament_mgr);
     const ConfigOption* enable_support_option = new_full_config.option("enable_support");
     if (enable_support_option && enable_support_option->getBool())
         m_support_used = true;

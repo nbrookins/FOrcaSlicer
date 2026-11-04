@@ -186,7 +186,7 @@ struct SupportParameters {
         // support_interface_filament, which is what upstream read. And the width itself is an
         // absolute value authored against nozzle 1, so under mixed nozzles it has to be re-derived
         // for the nozzle that actually prints it. Both are no-ops on a uniform machine.
-	    const auto     nozzle_diameter = print_config.nozzle_diameter.get_at(object_config.support_filament - 1);
+	    const auto     nozzle_diameter = fos_filament_nozzle_diameter(print_config, object_config.support_filament.value);
         // FOS 8.5: support_line_width is stamped to absolute mm for the support nozzle, so use it
         // as-is, matching support_material_flow() in Flow.cpp (the nozzle ratio would double-apply).
         const ConfigOptionFloatOrPercent &raw_width =

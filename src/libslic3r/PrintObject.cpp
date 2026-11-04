@@ -3591,7 +3591,8 @@ std::vector<unsigned int> PrintObject::object_extruders() const
         std::vector<int> volume_extruders = mv->get_extruders();
         for (int extruder : volume_extruders) {
             assert(extruder > 0);
-            extruders.push_back(extruder - 1);
+            // FOS: a mapped mixed filament lists its head; identity otherwise.
+            extruders.push_back(fos_nozzle_head(this->print()->config(), extruder) - 1);
         }
     }
     sort_remove_duplicates(extruders);

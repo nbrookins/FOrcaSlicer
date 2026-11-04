@@ -933,7 +933,8 @@ std::vector<unsigned int> Print::object_extruders() const
             std::vector<int> volume_extruders = mv->get_extruders();
             for (int extruder : volume_extruders) {
                 assert(extruder > 0);
-                extruders.push_back(extruder - 1);
+                // FOS: a mapped mixed filament lists its head; identity otherwise.
+                extruders.push_back(fos_nozzle_head(m_config, extruder) - 1);
             }
         }
 
@@ -945,7 +946,7 @@ std::vector<unsigned int> Print::object_extruders() const
                 //Add protection here to avoid overflow
                 auto value = layer_range.second.option("extruder")->getInt();
                 if (value > 0)
-                    extruders.push_back(value - 1);
+                    extruders.push_back(fos_nozzle_head(m_config, value) - 1);
             }
         }
     }
@@ -960,23 +961,27 @@ std::vector<unsigned int> Print::support_material_extruders() const
     bool support_uses_current_extruder = false;
     // BBS
     auto num_extruders = (unsigned int)m_config.filament_diameter.size();
+    // FOS: a mapped mixed filament lists the head it is sliced for; otherwise head 1 as upstream.
+    auto support_extruder_index = [this, num_extruders](int filament) -> unsigned int {
+        const unsigned int i = (unsigned int)filament - 1;
+        if (i < num_extruders)
+            return i;
+        const int head = fos_nozzle_head(m_config, filament);
+        return (head != filament && head >= 1 && (unsigned int)head <= num_extruders) ? (unsigned int)(head - 1) : 0;
+    };
 
     for (PrintObject *object : m_objects) {
         if (object->has_support_material()) {
         	assert(object->config().support_filament >= 0);
             if (object->config().support_filament == 0)
                 support_uses_current_extruder = true;
-            else {
-            	unsigned int i = (unsigned int)object->config().support_filament - 1;
-                extruders.emplace_back((i >= num_extruders) ? 0 : i);
-            }
+            else
+                extruders.emplace_back(support_extruder_index(object->config().support_filament.value));
         	assert(object->config().support_interface_filament >= 0);
             if (object->config().support_interface_filament == 0)
                 support_uses_current_extruder = true;
-            else {
-            	unsigned int i = (unsigned int)object->config().support_interface_filament - 1;
-                extruders.emplace_back((i >= num_extruders) ? 0 : i);
-            }
+            else
+                extruders.emplace_back(support_extruder_index(object->config().support_interface_filament.value));
         }
     }
 
@@ -1002,7 +1007,7 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
         if (m_model.plates_custom_gcodes.find(m_model.curr_plate_index) != m_model.plates_custom_gcodes.end()) {
             for (auto item : m_model.plates_custom_gcodes.at(m_model.curr_plate_index).gcodes) {
                 if (item.type == CustomGCode::Type::ToolChange && item.extruder <= int(num_filaments))
-                    extruders.push_back((unsigned int)(item.extruder - 1));
+                    extruders.push_back((unsigned int)(fos_nozzle_head(m_config, item.extruder) - 1));
             }
         }
     }
@@ -1643,7 +1648,7 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
     // (fos_filament_nozzle_head), and then printed by each of its heads, so all those heads must share
     // a nozzle size. extruders() clamps virtual IDs, so scan the unclamped 1-based assignments.
     if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
-        const size_t num_physical = m_config.filament_colour.size();
+        const size_t num_physical = m_config.filament_diameter.size(); // as Print::apply numbers virtual IDs
         auto bad_mix = [this, num_physical](int filament_id) {
             if (filament_id <= 0 || !m_mixed_filament_mgr.is_mixed(unsigned(filament_id), num_physical))
                 return false;
@@ -2035,12 +2040,12 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             double first_layer_min_nozzle_diameter;
             if (object->has_raft()) {
                 // if we have raft layers, only support material extruder is used on first layer
-                size_t first_layer_extruder = object->config().raft_layers == 1
-                    ? object->config().support_interface_filament-1
-                    : object->config().support_filament-1;
-                first_layer_min_nozzle_diameter = (first_layer_extruder == size_t(-1)) ?
+                const int first_layer_filament = object->config().raft_layers == 1
+                    ? object->config().support_interface_filament.value
+                    : object->config().support_filament.value;
+                first_layer_min_nozzle_diameter = (first_layer_filament == 0) ?
                     min_nozzle_diameter :
-                    m_config.nozzle_diameter.get_at(first_layer_extruder);
+                    fos_filament_nozzle_diameter(m_config, first_layer_filament);
             } else {
                 // if we don't have raft layers, any nozzle diameter is potentially used in first layer
                 first_layer_min_nozzle_diameter = min_nozzle_diameter;
