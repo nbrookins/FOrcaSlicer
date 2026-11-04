@@ -1232,16 +1232,33 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
         const int     filament = extruder < 1 ? 1 : extruder;
         PresetBundle *bundle   = wxGetApp().preset_bundle;
         // A mixed (virtual) filament must cover both walls (Print::validate). Picking one here, or
-        // picking away from one, therefore sets the whole object filament group; otherwise the
-        // pick sets only the outer wall (the object identity) as before.
+        // picking away from mixed walls, therefore sets the whole object filament group; otherwise
+        // the pick sets only the outer wall (the object identity) as before.
         auto is_mixed = [bundle](int id) {
             return bundle != nullptr && id > 0 && bundle->mixed_filaments.is_mixed(unsigned(id), bundle->filament_presets.size());
         };
-        bool group_has_mixed = is_mixed(filament);
-        for (const char *key : { "wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament" })
-            if (const ConfigOption *opt = m_config->option(key); opt != nullptr && is_mixed(opt->getInt()))
-                group_has_mixed = true;
-        if (group_has_mixed)
+        // Effective value of a feature filament: this item, then its object (for a part), then the
+        // global process preset - a mixed value inherited from either still forms the bad pair.
+        const ModelConfig *object_config = nullptr;
+        if (item_type & itVolume)
+            if (const int obj_idx = m_objects_model->GetIdByItem(m_objects_model->GetObject(item)); obj_idx >= 0)
+                object_config = &(*m_objects)[obj_idx]->config;
+        const DynamicPrintConfig *global_config = bundle != nullptr ? &bundle->prints.get_edited_preset().config : nullptr;
+        auto effective = [this, object_config, global_config](const char *key) -> int {
+            if (const ConfigOption *opt = m_config->option(key))
+                return opt->getInt();
+            if (object_config != nullptr)
+                if (const ConfigOption *opt = object_config->option(key))
+                    return opt->getInt();
+            if (global_config != nullptr)
+                if (const ConfigOption *opt = global_config->option(key))
+                    return opt->getInt();
+            return 0;
+        };
+        // Only the walls can form the rejected pair; a mixed infill under physical walls is valid and kept.
+        const bool walls_involve_mixed = is_mixed(filament) || is_mixed(effective("wall_filament")) ||
+                                         is_mixed(effective("inner_wall_filament"));
+        if (walls_involve_mixed)
             unify_object_filaments(*m_config, filament);
         else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
