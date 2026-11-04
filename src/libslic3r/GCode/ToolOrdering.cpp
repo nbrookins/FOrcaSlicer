@@ -1555,6 +1555,17 @@ bool WipingExtrusions::is_overriddable(const ExtrusionEntityCollection& eec, con
     if (print_config.filament_soluble.get_at(m_layer_tools->extruder(eec, region)))
         return false;
 
+    // FOS: a color mix alternates heads layer by layer; purging another head into this region
+    // would print it in the purge colour instead and break the mix pattern.
+    if (const Print *print = object.print()) {
+        const size_t num_physical = print_config.filament_diameter.size();
+        const auto  &rcfg         = region.config();
+        for (int id : { rcfg.wall_filament.value, rcfg.inner_wall_filament.value, rcfg.sparse_infill_filament.value,
+                        rcfg.solid_infill_filament.value })
+            if (id > 0 && print->mixed_filament_manager().is_mixed(unsigned(id), num_physical))
+                return false;
+    }
+
     if (object.config().flush_into_objects)
         return true;
 

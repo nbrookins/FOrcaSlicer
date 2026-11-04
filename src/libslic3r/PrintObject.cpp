@@ -4528,6 +4528,15 @@ void PrintObject::combine_infill()
 
         // Support internal solid infill when sparse_infill_density is 100%
         const bool          use_solid_infill = fabs(region.config().sparse_infill_density.value - 100.) < EPSILON;
+        // FOS: a color mix alternates heads layer by layer; merging layers would print one head for
+        // the whole stack and leave the layers in between empty on infill-only parts.
+        {
+            const int infill_filament = use_solid_infill ? region.config().solid_infill_filament.value
+                                                         : region.config().sparse_infill_filament.value;
+            if (infill_filament > 0 &&
+                this->print()->mixed_filament_manager().is_mixed(unsigned(infill_filament), this->print()->config().filament_diameter.size()))
+                continue;
+        }
         const SurfaceType   surface_type     = use_solid_infill ? stInternalSolid : stInternal;
         const InfillPattern infill_pattern   = use_solid_infill ? region.config().internal_solid_infill_pattern :
                                                                   region.config().sparse_infill_pattern;
