@@ -1228,8 +1228,16 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
     // FOS: (the layer-range tool is a separate concept).
     if (item_type & itLayer)
         m_config->set_key_value("extruder", new ConfigOptionInt(extruder));
-    else
-        m_config->set_key_value("wall_filament", new ConfigOptionInt(extruder < 1 ? 1 : extruder));
+    else {
+        const int     filament = extruder < 1 ? 1 : extruder;
+        PresetBundle *bundle   = wxGetApp().preset_bundle;
+        // A mixed (virtual) filament must cover both walls (Print::validate), so picking one here
+        // means "print this object in it": set the whole object filament group, not just the outer wall.
+        if (bundle != nullptr && bundle->mixed_filaments.is_mixed(unsigned(filament), bundle->filament_presets.size()))
+            unify_object_filaments(*m_config, filament);
+        else
+            m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
+    }
 
     // BBS
     if (item_type & itObject) {
