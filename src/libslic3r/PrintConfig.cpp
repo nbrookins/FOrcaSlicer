@@ -4066,6 +4066,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // FOS: computed by Print::apply on mixed-nozzle printers with mixed filaments; empty otherwise.
+    def = this->add("fos_filament_nozzle_head", coInts);
+    def->label = "Nozzle head per filament";
+    def->tooltip = "Computed when slicing: the head whose nozzle each filament, including mixed filaments, "
+                   "is sliced for. Not user-editable.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionInts());
+
     // FOS: per-nozzle slot plumbing (fos.8.5). Written by the GUI into project_config
     // from the LIVE m_fos_slot_configs, so unsaved notebook edits are captured.
     def = this->add("print_filament_presets", coStrings);
@@ -8164,6 +8172,19 @@ void DynamicPrintConfig::normalize_fdm_1()
     }
     return;
 }
+int fos_nozzle_head(const PrintConfig &config, int filament_id)
+{
+    const std::vector<int> &heads = config.fos_filament_nozzle_head.values;
+    if (filament_id > 0 && size_t(filament_id) <= heads.size() && heads[size_t(filament_id - 1)] > 0)
+        return heads[size_t(filament_id - 1)];
+    return filament_id;
+}
+
+double fos_filament_nozzle_diameter(const PrintConfig &config, int filament_id)
+{
+    return config.nozzle_diameter.get_at(size_t(fos_nozzle_head(config, filament_id) - 1));
+}
+
 t_config_option_keys DynamicPrintConfig::normalize_fdm_2(int num_objects, int used_filaments)
 {
     t_config_option_keys changed_keys;

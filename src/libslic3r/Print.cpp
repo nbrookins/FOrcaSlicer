@@ -1639,27 +1639,44 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             }
     }
 
-    // extruders() clamps virtual (mixed) IDs to 0, so scan the unclamped 1-based assignments.
+    // FOS: on a mixed-nozzle printer a mixed filament's paths are sliced once, for one nozzle
+    // (fos_filament_nozzle_head), and then printed by each of its heads, so all those heads must share
+    // a nozzle size. extruders() clamps virtual IDs, so scan the unclamped 1-based assignments.
     if (m_config.has_mixed_nozzle_sizes.value && m_mixed_filament_mgr.enabled_count() > 0) {
         const size_t num_physical = m_config.filament_colour.size();
-        auto is_mixed = [this, num_physical](int filament_id) {
-            return filament_id > 0 && m_mixed_filament_mgr.is_mixed(unsigned(filament_id), num_physical);
+        auto bad_mix = [this, num_physical](int filament_id) {
+            if (filament_id <= 0 || !m_mixed_filament_mgr.is_mixed(unsigned(filament_id), num_physical))
+                return false;
+            const std::vector<unsigned int> heads = m_mixed_filament_mgr.physical_components(unsigned(filament_id), num_physical);
+            if (heads.empty())
+                return true;
+            const double first = m_config.nozzle_diameter.get_at(heads.front() - 1);
+            for (unsigned int head : heads)
+                if (std::abs(m_config.nozzle_diameter.get_at(head - 1) - first) > EPSILON)
+                    return true;
+            return false;
         };
-        bool uses_mixed = has_wipe_tower() && is_mixed(m_config.wipe_tower_filament.value);
+        int bad = 0;
+        if (has_wipe_tower() && bad_mix(m_config.wipe_tower_filament.value))
+            bad = m_config.wipe_tower_filament.value;
         for (const PrintObject *object : m_objects) {
             const PrintObjectConfig &ocfg = object->config();
-            uses_mixed = uses_mixed || is_mixed(ocfg.support_filament.value) || is_mixed(ocfg.support_interface_filament.value);
-            for (size_t i = 0; !uses_mixed && i < object->num_printing_regions(); ++i) {
+            for (int id : { ocfg.support_filament.value, ocfg.support_interface_filament.value })
+                if (bad == 0 && bad_mix(id))
+                    bad = id;
+            for (size_t i = 0; bad == 0 && i < object->num_printing_regions(); ++i) {
                 const PrintRegionConfig &rcfg = object->printing_region(i).config();
-                uses_mixed = is_mixed(rcfg.wall_filament.value) || is_mixed(rcfg.inner_wall_filament.value) ||
-                             is_mixed(rcfg.sparse_infill_filament.value) || is_mixed(rcfg.solid_infill_filament.value);
+                for (int id : { rcfg.wall_filament.value, rcfg.inner_wall_filament.value, rcfg.sparse_infill_filament.value,
+                                rcfg.solid_infill_filament.value })
+                    if (bad == 0 && bad_mix(id))
+                        bad = id;
             }
-            if (uses_mixed)
+            if (bad != 0)
                 break;
         }
-        if (uses_mixed)
-            return { L("Mixed filaments (color mixing) cannot be used with mixed nozzle sizes. Use the same "
-                       "nozzle size on all heads, or remove the mixed filament from this plate.") };
+        if (bad != 0)
+            return { (boost::format(_u8L("Mixed filament %1% combines heads with different nozzle sizes. A color mix can "
+                                         "only use heads that share a nozzle size.")) % bad).str() };
     }
 
     // FOS: with mixed nozzle sizes, support has no valid "Default" filament. Support paths are
@@ -2347,7 +2364,7 @@ Flow Print::brim_flow() const
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
 		width,
-        (float)m_config.nozzle_diameter.get_at(m_print_regions.front()->config().wall_filament-1),
+        (float)fos_filament_nozzle_diameter(m_config, m_print_regions.front()->config().wall_filament.value),
 		(float)this->skirt_first_layer_height());
 }
 
@@ -2366,7 +2383,7 @@ Flow Print::skirt_flow() const
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
 		width,
-		(float)m_config.nozzle_diameter.get_at(m_objects.front()->config().support_filament-1),
+		(float)fos_filament_nozzle_diameter(m_config, m_objects.front()->config().support_filament.value),
 		(float)this->skirt_first_layer_height());
 }
 

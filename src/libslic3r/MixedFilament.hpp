@@ -294,6 +294,10 @@ public:
     // responsible for re-sorting and re-deduplicating after the call.
     void expand_virtual_extruder_ids(std::vector<int> &ids, size_t num_physical) const;
 
+    // Every physical filament (1-based, sorted, unique) a filament ID can print with: itself for a
+    // physical ID; for a mixed filament its components, gradient IDs and manual-pattern tokens.
+    std::vector<unsigned int> physical_components(unsigned int filament_id, size_t num_physical) const;
+
     // Normalize a gradient_component_ids string to canonical form.
     // Canonical form uses legacy encoding when all IDs ≤ 9, extended otherwise.
     static std::string normalize_gradient_component_ids(const std::string &components);

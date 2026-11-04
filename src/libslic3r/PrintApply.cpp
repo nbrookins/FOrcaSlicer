@@ -1271,6 +1271,52 @@ static bool same_layer_pointillism_enabled(const MixedFilamentManager &mixed_mgr
     return false;
 }
 
+// FOS: mixed filaments on a mixed-nozzle printer. Record, per 1-based filament ID, the head whose
+// nozzle it is sliced for (a mixed filament -> its lowest head; validate() requires all its heads to
+// share a nozzle size), and extend the per-nozzle fos_nozzle_* arrays with that head's values so the
+// per-nozzle stamp indexes mixed IDs like physical ones. Runs on new_full_config before any diff, so
+// it takes part in the normal change detection. Uniform nozzles: empty mapping, arrays untouched.
+static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg)
+{
+    std::vector<int> heads;
+    size_t           num_physical  = 0;
+    const auto      *mixed_nozzles = cfg.option<ConfigOptionBool>("has_mixed_nozzle_sizes");
+    const auto      *diameters     = cfg.option<ConfigOptionFloats>("filament_diameter");
+    if (mixed_nozzles != nullptr && mixed_nozzles->value && diameters != nullptr && !diameters->values.empty()) {
+        num_physical = diameters->values.size();
+        std::vector<std::string> colours;
+        if (const auto *c = cfg.option<ConfigOptionStrings>("filament_colour"))
+            colours = c->values;
+        colours.resize(num_physical, "#26A69A");
+        MixedFilamentManager mgr;
+        mgr.clear_custom_entries();
+        mgr.auto_generate(colours);
+        if (cfg.has("mixed_filament_definitions"))
+            mgr.load_custom_entries(cfg.opt_string("mixed_filament_definitions"), colours);
+        const size_t total = mgr.total_filaments(num_physical);
+        if (total > num_physical) {
+            heads.resize(total);
+            for (size_t id = 1; id <= total; ++id) {
+                const std::vector<unsigned int> comps = mgr.physical_components(unsigned(id), num_physical);
+                heads[id - 1] = comps.empty() ? (id <= num_physical ? int(id) : 1) : int(comps.front());
+            }
+        }
+    }
+    cfg.set_key_value("fos_filament_nozzle_head", new ConfigOptionInts(heads));
+    if (heads.empty())
+        return;
+    for (const std::string &key : cfg.keys()) {
+        if (key.rfind("fos_nozzle_", 0) != 0)
+            continue;
+        auto *arr = cfg.option<ConfigOptionFloats>(key);
+        if (arr == nullptr || arr->values.size() < num_physical)
+            continue;
+        arr->values.resize(num_physical);
+        for (size_t id = num_physical + 1; id <= heads.size(); ++id)
+            arr->values.push_back(arr->values[size_t(heads[id - 1] - 1)]);
+    }
+}
+
 Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_config)
 {
 #ifdef _DEBUG
@@ -1345,6 +1391,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", i=%1%, key=%2%")%i %changed_keys[i];
         }
     }
+    fos_prepare_mixed_nozzle_heads(new_full_config);
     const ConfigOption* enable_support_option = new_full_config.option("enable_support");
     if (enable_support_option && enable_support_option->getBool())
         m_support_used = true;

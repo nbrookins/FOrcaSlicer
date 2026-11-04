@@ -863,6 +863,31 @@ std::vector<unsigned int> MixedFilamentManager::decode_gradient_component_ids(co
     return ids;
 }
 
+std::vector<unsigned int> MixedFilamentManager::physical_components(unsigned int filament_id, size_t num_physical) const
+{
+    std::vector<unsigned int> out;
+    auto add = [&out, num_physical](unsigned int id) {
+        if (id >= 1 && id <= num_physical)
+            out.push_back(id);
+    };
+    const MixedFilament *mf = mixed_filament_from_id(filament_id, num_physical);
+    if (mf == nullptr) {
+        add(filament_id);
+        return out;
+    }
+    add(mf->component_a);
+    add(mf->component_b);
+    for (unsigned int id : decode_gradient_component_ids(mf->gradient_component_ids, num_physical))
+        add(id);
+    if (!mf->manual_pattern.empty())
+        for (const std::string &group : split_pattern_groups(mf->manual_pattern))
+            for (const std::string &token : split_pattern_group_to_tokens(group, num_physical))
+                add(physical_filament_from_token(token, *mf, num_physical));
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 void MixedFilamentManager::expand_virtual_extruder_ids(std::vector<int> &ids, size_t num_physical) const
 {
     if (num_physical == 0)

@@ -1476,6 +1476,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloats,             slow_down_min_speed))
     ((ConfigOptionFloats,             nozzle_diameter))
     ((ConfigOptionBool,               has_mixed_nozzle_sizes))
+    ((ConfigOptionInts,               fos_filament_nozzle_head))
     ((ConfigOptionBool,               reduce_infill_retraction))
     ((ConfigOptionBool,               ooze_prevention))
     ((ConfigOptionString,             filename_format))
@@ -1616,6 +1617,14 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
 )
 
 // This object is mapped to Perl as Slic3r::Config::Full.
+// FOS: physical head (1-based) whose nozzle a 1-based filament ID prints with. A mixed (virtual)
+// filament maps to one of its heads; Print::validate() requires all its heads to share a nozzle
+// size. Without a mapping (uniform nozzles, or a physical ID) the ID is returned unchanged.
+int    fos_nozzle_head(const PrintConfig &config, int filament_id);
+// Nozzle diameter for a 1-based filament ID. Identical to nozzle_diameter.get_at(filament_id - 1)
+// unless the ID is a mapped mixed filament.
+double fos_filament_nozzle_diameter(const PrintConfig &config, int filament_id);
+
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(
     FullPrintConfig,
     (PrintObjectConfig, PrintRegionConfig, PrintConfig)

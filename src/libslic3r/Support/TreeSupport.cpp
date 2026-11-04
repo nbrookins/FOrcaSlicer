@@ -682,7 +682,7 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
     // built to 0.2-nozzle dimensions. Take the nozzle that prints the support, and re-derive the
     // preset's nozzle-1 absolute width for it.
     const PrintConfig &fos_print_config = m_object->print()->config();
-    const double nozzle_diameter = fos_print_config.nozzle_diameter.get_at(config.support_filament - 1);
+    const double nozzle_diameter = fos_filament_nozzle_diameter(fos_print_config, config.support_filament.value);
     const coordf_t extrusion_width = fos_abs_width_for_nozzle(config.line_width, fos_print_config, nozzle_diameter);
     const coordf_t extrusion_width_scaled = scale_(extrusion_width);
     const coordf_t max_bridge_length = scale_(config.max_bridge_length.value);
@@ -1576,7 +1576,7 @@ void TreeSupport::generate_toolpaths()
 {
     const PrintObjectConfig &object_config = m_object->config();
     coordf_t support_extrusion_width = m_support_params.support_extrusion_width;
-    coordf_t nozzle_diameter = m_print_config->nozzle_diameter.get_at(object_config.support_filament - 1);
+    coordf_t nozzle_diameter = fos_filament_nozzle_diameter(*m_print_config, object_config.support_filament.value);
     coordf_t layer_height = object_config.layer_height.value;
     const size_t wall_count = tree_support_effective_wall_count(m_support_params.support_style, object_config.tree_support_wall_count.value);
 
@@ -2243,7 +2243,7 @@ void TreeSupport::draw_circles()
     const size_t   bottom_interface_layers = config.support_interface_bottom_layers.value < 0 ? top_interface_layers : config.support_interface_bottom_layers.value;
     // FOS: was get_at(0) - hardcoded to nozzle 1. See generate_toolpaths(); same rule.
     const PrintConfig &fos_print_config = m_object->print()->config();
-    const double nozzle_diameter = fos_print_config.nozzle_diameter.get_at(config.support_filament - 1);
+    const double nozzle_diameter = fos_filament_nozzle_diameter(fos_print_config, config.support_filament.value);
     // support_line_width is stamped to absolute mm for the support nozzle; use it as-is (see Flow.cpp).
     const ConfigOptionFloatOrPercent &raw_width = config.support_line_width.value > 0 ? config.support_line_width : config.line_width;
     coordf_t line_width = raw_width.get_abs_value(nozzle_diameter);
