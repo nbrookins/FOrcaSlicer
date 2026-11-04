@@ -1258,9 +1258,16 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
         // Only the walls can form the rejected pair; a mixed infill under physical walls is valid and kept.
         const bool walls_involve_mixed = is_mixed(filament) || is_mixed(effective("wall_filament")) ||
                                          is_mixed(effective("inner_wall_filament"));
-        if (walls_involve_mixed)
+        if (walls_involve_mixed) {
             unify_object_filaments(*m_config, filament);
-        else
+            // An object-level pick shows on every part; a part keeping its own wall override would
+            // pair it with the object's (mixed) inner wall, so bring such parts along.
+            if (item_type & itObject)
+                if (const int obj_idx = m_objects_model->GetIdByItem(item); obj_idx >= 0)
+                    for (ModelVolume *mv : (*m_objects)[obj_idx]->volumes)
+                        if (mv->is_model_part() && (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
+                            unify_object_filaments(mv->config, filament);
+        } else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
     }
 
