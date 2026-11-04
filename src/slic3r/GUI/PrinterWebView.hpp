@@ -25,6 +25,8 @@
 #include <wx/tbarbase.h>
 #include "wx/textctrl.h"
 #include <wx/timer.h>
+#include <atomic>
+#include <memory>
 
 
 namespace Slic3r {
@@ -52,8 +54,10 @@ public:
 private:
     void SendAPIKey();
     void AutoConnectSavedDevice();
+    void StartAutoConnectWhenLanReachable();
     wxTimer m_fos_autoconnect_timer;
     wxString m_fos_requested_url;
+    std::shared_ptr<std::atomic<bool>> m_fos_alive{std::make_shared<std::atomic<bool>>(true)};
 
     wxWebView* m_browser;
     long m_zoomFactor;

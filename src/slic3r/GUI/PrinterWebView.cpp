@@ -20,6 +20,21 @@
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#ifdef __APPLE__
+#include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 using json = nlohmann::json;
 
 namespace pt = boost::property_tree;
@@ -68,6 +83,7 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
 PrinterWebView::~PrinterWebView()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Start";
+    m_fos_alive->store(false);
     m_fos_autoconnect_timer.Stop();
     SetEvtHandlerEnabled(false);
     SSWCP::on_webview_delete(m_browser);
@@ -94,8 +110,13 @@ void PrinterWebView::load_url(wxString& url, wxString apikey)
     m_browser->Show();
     WebView::LoadUrl(m_browser, url);
     m_fos_requested_url = url;
-    if (url.find("flutter_web") != wxString::npos)
+    if (url.find("flutter_web") != wxString::npos) {
+#ifdef __APPLE__
+        StartAutoConnectWhenLanReachable();
+#else
         m_fos_autoconnect_timer.StartOnce(4000);
+#endif
+    }
 
     UpdateState();
 }
@@ -253,7 +274,108 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
         return;
     BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_loaded] view=device url=" << evt.GetURL().ToUTF8().data();
     SendAPIKey();
+#ifndef __APPLE__
     AutoConnectSavedDevice();
+#endif
+}
+
+namespace {
+// Saved printers (name, ip) from the app config; the device page owns the list but keeps it there.
+std::vector<std::pair<std::string, std::string>> fos_saved_devices(AppConfig &cfg)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    try {
+        boost::nowide::ifstream in(cfg.config_path());
+        json conf = json::parse(in, nullptr, false);
+        if (conf.is_object() && conf.contains("devices") && conf["devices"].is_array())
+            for (const json &dev : conf["devices"]) {
+                if (!dev.is_object() || !dev.contains("dev_name") || !dev["dev_name"].is_string())
+                    continue;
+                const std::string name = dev["dev_name"].get<std::string>();
+                const std::string ip   = dev.contains("ip") && dev["ip"].is_string() ? dev["ip"].get<std::string>() : std::string();
+                if (!name.empty())
+                    out.emplace_back(name, ip);
+            }
+    } catch (const std::exception &e) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: cannot read saved devices: " << e.what();
+    }
+    return out;
+}
+
+#ifdef __APPLE__
+// True once macOS lets this app reach `ip` (connected, or actively refused). While Local Network
+// access is still unanswered or denied, connect() fails at once with EHOSTUNREACH; a printer that
+// is off just times out. The first attempt is also what makes macOS show its permission prompt.
+bool fos_lan_reachable(const std::string &ip, int port)
+{
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1)
+        return true;
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return false;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    int err = connect(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == 0 ? 0 : errno;
+    if (err == EINPROGRESS) {
+        pollfd p{fd, POLLOUT, 0};
+        if (poll(&p, 1, 1500) == 1) {
+            socklen_t len = sizeof(err);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        } else
+            err = ETIMEDOUT;
+    }
+    close(fd);
+    return err == 0 || err == ECONNREFUSED;
+}
+#endif
+} // namespace
+
+// FOS: on macOS the device page reports a just-launched app's printer as "offline" when its first
+// LAN access is still waiting on the Local Network prompt. Probe the saved printer first (this also
+// raises the prompt at launch) and only tap it once the network actually lets us through.
+void PrinterWebView::StartAutoConnectWhenLanReachable()
+{
+#ifdef __APPLE__
+    static bool started = false;
+    AppConfig *cfg = wxGetApp().app_config;
+    if (started || cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
+        return;
+    std::vector<std::string> ips;
+    for (const auto &dev : fos_saved_devices(*cfg))
+        if (!dev.second.empty())
+            ips.push_back(dev.second);
+    started = true;
+    if (ips.empty()) {
+        m_fos_autoconnect_timer.StartOnce(4000);
+        return;
+    }
+    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: waiting for LAN access to " << ips.front();
+    std::shared_ptr<std::atomic<bool>> alive = m_fos_alive;
+    std::thread([this, alive, ips]() {
+        using namespace std::chrono;
+        const auto deadline  = steady_clock::now() + minutes(2);
+        bool       reachable = false;
+        while (!reachable && alive->load() && steady_clock::now() < deadline) {
+            for (const std::string &ip : ips)
+                if ((reachable = fos_lan_reachable(ip, 1884)))
+                    break;
+            if (!reachable)
+                std::this_thread::sleep_for(seconds(2));
+        }
+        if (!alive->load())
+            return;
+        wxTheApp->CallAfter([this, alive, reachable]() {
+            if (!alive->load())
+                return;
+            if (reachable)
+                AutoConnectSavedDevice();
+            else
+                BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: printer not reachable after 2 minutes; leaving it to the user";
+        });
+    }).detach();
+#endif
 }
 
 // FOS: the Snapmaker device page never reconnects on its own; once per app start, tap the saved
