@@ -16,6 +16,9 @@
 #include <wx/webview.h>
 #include "slic3r/GUI/SSWCP.hpp"
 #include "sentry_wrapper/SentryWrapper.hpp"
+#include "slic3r/Utils/GatewayService.hpp"
+
+#include <algorithm>
 
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
@@ -280,10 +283,17 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
 }
 
 namespace {
-// Saved printers (name, ip) from the app config; the device page owns the list but keeps it there.
-std::vector<std::pair<std::string, std::string>> fos_saved_devices(AppConfig &cfg)
+struct FosSavedDevice
 {
-    std::vector<std::pair<std::string, std::string>> out;
+    std::string name;
+    std::string ip;
+    std::string sn;
+};
+
+// Saved printers from the app config; the device page owns the list but keeps it there.
+std::vector<FosSavedDevice> fos_saved_devices(AppConfig &cfg)
+{
+    std::vector<FosSavedDevice> out;
     try {
         boost::nowide::ifstream in(cfg.config_path());
         json conf = json::parse(in, nullptr, false);
@@ -291,10 +301,12 @@ std::vector<std::pair<std::string, std::string>> fos_saved_devices(AppConfig &cf
             for (const json &dev : conf["devices"]) {
                 if (!dev.is_object() || !dev.contains("dev_name") || !dev["dev_name"].is_string())
                     continue;
-                const std::string name = dev["dev_name"].get<std::string>();
-                const std::string ip   = dev.contains("ip") && dev["ip"].is_string() ? dev["ip"].get<std::string>() : std::string();
-                if (!name.empty())
-                    out.emplace_back(name, ip);
+                FosSavedDevice d;
+                d.name = dev["dev_name"].get<std::string>();
+                d.ip   = dev.contains("ip") && dev["ip"].is_string() ? dev["ip"].get<std::string>() : std::string();
+                d.sn   = dev.contains("dev_id") && dev["dev_id"].is_string() ? dev["dev_id"].get<std::string>() : std::string();
+                if (!d.name.empty())
+                    out.push_back(std::move(d));
             }
     } catch (const std::exception &e) {
         BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: cannot read saved devices: " << e.what();
@@ -343,9 +355,9 @@ void PrinterWebView::StartAutoConnectWhenLanReachable()
     if (started || cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
         return;
     std::vector<std::string> ips;
-    for (const auto &dev : fos_saved_devices(*cfg))
-        if (!dev.second.empty())
-            ips.push_back(dev.second);
+    for (const FosSavedDevice &dev : fos_saved_devices(*cfg))
+        if (!dev.ip.empty())
+            ips.push_back(dev.ip);
     started = true;
     if (ips.empty()) {
         m_fos_autoconnect_timer.StartOnce(4000);
@@ -378,79 +390,43 @@ void PrinterWebView::StartAutoConnectWhenLanReachable()
 #endif
 }
 
-// FOS: the Snapmaker device page never reconnects on its own; once per app start, tap the saved
-// printer for the user. The page is a Flutter canvas, so the tap goes through Flutter's semantics
-// tree (enabled via its placeholder) and is matched by the printer's name. Best effort: if the page
-// layout changes and nothing matches, it gives up after ~30 s and the user connects manually.
+// FOS: the Snapmaker device page never reconnects on its own; once per app start, ask the connection
+// gateway to connect the saved LAN printer (the same action.device.connect the page sends when the
+// user picks it). The gateway notifies every client, so the page shows the printer as connected.
 void PrinterWebView::AutoConnectSavedDevice()
 {
     static bool attempted = false;
-    if (attempted || m_browser == nullptr)
+    if (attempted)
         return;
-    // GetCurrentURL() can lag on the 1.8.x page, so also accept the URL this view was asked to load.
-    const bool device_page = is_u1_device_page() ||
-                             (m_fos_requested_url.find("flutter_web") != wxString::npos &&
-                              (m_fos_requested_url.find("/device_control") != wxString::npos ||
-                               m_fos_requested_url.find("path=2") != wxString::npos));
-    if (!device_page) {
-        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, not the device page (current="
-                                   << m_browser->GetCurrentURL().ToUTF8().data() << ")";
-        return;
-    }
     AppConfig *cfg = wxGetApp().app_config;
     if (cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
         return;
-
-    json names = json::array();
-    try {
-        boost::nowide::ifstream in(cfg->config_path());
-        json conf = json::parse(in, nullptr, false);
-        if (conf.is_object() && conf.contains("devices") && conf["devices"].is_array())
-            for (const json &dev : conf["devices"])
-                if (dev.is_object() && dev.contains("dev_name") && dev["dev_name"].is_string() && !dev["dev_name"].get<std::string>().empty())
-                    names.push_back(dev["dev_name"].get<std::string>());
-    } catch (const std::exception &e) {
-        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: cannot read saved devices: " << e.what();
+    std::shared_ptr<Gateway::GatewayService> gateway = wxGetApp().gateway_service();
+    if (!gateway) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, connection gateway not running";
+        return;
     }
-    if (names.empty()) {
-        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, no saved device in " << cfg->config_path();
+    if (wxGetApp().gateway_device_connected()) {
+        attempted = true;
+        return;
+    }
+    const std::vector<FosSavedDevice> devices = fos_saved_devices(*cfg);
+    auto it = std::find_if(devices.begin(), devices.end(), [](const FosSavedDevice &d) { return !d.sn.empty() && !d.ip.empty(); });
+    if (it == devices.end()) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, no saved LAN printer in " << cfg->config_path();
         return;
     }
     attempted = true;
 
-    const std::string script = R"((function(names) {
-    if (window.__fos_autoconnect) return;
-    window.__fos_autoconnect = true;
-    function report(status) {
-        try { window.wx.postMessage(JSON.stringify({ fos_autoconnect: status })); } catch (e) {}
-    }
-    var tries = 0;
-    function tick() {
-        tries++;
-        var ph = document.querySelector('flt-semantics-placeholder');
-        if (ph) ph.click();
-        var best = null;
-        document.querySelectorAll('[flt-tappable], [role="button"]').forEach(function(el) {
-            var label = ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).trim();
-            if (!label) return;
-            for (var i = 0; i < names.length; i++) {
-                if (label.indexOf(names[i]) >= 0 && (best === null || label.length < best.label.length))
-                    best = { el: el, label: label };
-            }
-        });
-        if (best) {
-            best.el.click();
-            report('clicked: ' + best.label.slice(0, 80));
-            return;
-        }
-        if (tries < 60) setTimeout(tick, 500);
-        else report('no matching device element after ' + tries + ' tries');
-    }
-    setTimeout(tick, 1500);
-}))" + std::string("(") + names.dump() + ");";
-
-    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: tapping saved device " << names.dump();
-    WebView::RunScript(m_browser, wxString::FromUTF8(script));
+    nlohmann::json params = {{"type", "LAN"}, {"sn", it->sn}, {"ip", it->ip}};
+    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: connecting " << it->name << " (" << it->ip << ")";
+    const std::string name = it->name;
+    gateway->request("action.device.connect", params, [name](Gateway::GatewayError error, const nlohmann::json &) {
+        if (error)
+            BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " failed: " << error.message;
+        else
+            BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " connected";
+    });
 }
 
 void PrinterWebView::OnScriptMessage(wxWebViewEvent& evt) {
