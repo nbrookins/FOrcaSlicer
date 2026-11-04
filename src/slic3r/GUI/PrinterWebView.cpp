@@ -58,11 +58,17 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
     //Connect the idle events
     Bind(wxEVT_CLOSE_WINDOW, &PrinterWebView::OnClose, this);
 
+    // The 1.8.x device page never reports LOADED for its own URL, so auto-connect is also
+    // started from load_url() on a timer; the script itself polls until the page is ready.
+    m_fos_autoconnect_timer.SetOwner(this);
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) { AutoConnectSavedDevice(); }, m_fos_autoconnect_timer.GetId());
+
  }
 
 PrinterWebView::~PrinterWebView()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Start";
+    m_fos_autoconnect_timer.Stop();
     SetEvtHandlerEnabled(false);
     SSWCP::on_webview_delete(m_browser);
 
@@ -87,6 +93,8 @@ void PrinterWebView::load_url(wxString& url, wxString apikey)
 
     m_browser->Show();
     WebView::LoadUrl(m_browser, url);
+    if (url.find("flutter_web") != wxString::npos)
+        m_fos_autoconnect_timer.StartOnce(4000);
 
     UpdateState();
 }
