@@ -268,7 +268,7 @@ public:
     std::string set_object_info(Print* print);
 
     // append full config to the given string
-    static void append_full_config(const Print& print, std::string& str);
+    static void append_full_config(const Print& print, std::string& str, const std::vector<unsigned int>* printing_extruders = nullptr);
 
     // Object and support extrusions of the same PrintObject at the same print_z.
     // public, so that it could be accessed by free helper functions from GCode.cpp
