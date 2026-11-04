@@ -1278,8 +1278,9 @@ static bool same_layer_pointillism_enabled(const MixedFilamentManager &mixed_mgr
 // it takes part in the normal change detection. Uniform nozzles: empty mapping, arrays untouched.
 static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg, const MixedFilamentManager &current)
 {
-    std::vector<int> heads;
-    size_t           num_physical  = 0;
+    std::vector<int>         heads;
+    std::vector<std::string> head_lists;
+    size_t                   num_physical  = 0;
     const auto      *mixed_nozzles = cfg.option<ConfigOptionBool>("has_mixed_nozzle_sizes");
     const auto      *diameters     = cfg.option<ConfigOptionFloats>("filament_diameter");
     if (mixed_nozzles != nullptr && mixed_nozzles->value && diameters != nullptr && !diameters->values.empty()) {
@@ -1298,13 +1299,17 @@ static void fos_prepare_mixed_nozzle_heads(DynamicPrintConfig &cfg, const MixedF
         const size_t total = mgr.total_filaments(num_physical);
         if (total > num_physical) {
             heads.resize(total);
+            head_lists.resize(total);
             for (size_t id = 1; id <= total; ++id) {
                 const std::vector<unsigned int> comps = mgr.physical_components(unsigned(id), num_physical);
                 heads[id - 1] = comps.empty() ? (id <= num_physical ? int(id) : 1) : int(comps.front());
+                for (unsigned int c : comps)
+                    head_lists[id - 1] += (head_lists[id - 1].empty() ? "" : ",") + std::to_string(c);
             }
         }
     }
     cfg.set_key_value("fos_filament_nozzle_head", new ConfigOptionInts(heads));
+    cfg.set_key_value("fos_filament_heads", new ConfigOptionStrings(head_lists));
     if (heads.empty())
         return;
     for (const std::string &key : cfg.keys()) {

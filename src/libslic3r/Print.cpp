@@ -745,6 +745,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "mixed_filament_surface_indentation"
             || opt_key == "mixed_filament_region_collapse"
             || opt_key == "mixed_filament_definitions"
+            || opt_key == "fos_filament_nozzle_head"
+            || opt_key == "fos_filament_heads"
             // Spiral Vase forces different kind of slicing than the normal model:
             // In Spiral Vase mode, holes are closed and only the largest area contour is kept at each layer.
             // Therefore toggling the Spiral Vase on / off requires complete reslicing.
@@ -933,8 +935,9 @@ std::vector<unsigned int> Print::object_extruders() const
             std::vector<int> volume_extruders = mv->get_extruders();
             for (int extruder : volume_extruders) {
                 assert(extruder > 0);
-                // FOS: a mapped mixed filament lists its head; identity otherwise.
-                extruders.push_back(fos_nozzle_head(m_config, extruder) - 1);
+                // FOS: a mapped mixed filament lists every head; identity otherwise.
+                for (int head : fos_filament_heads(m_config, extruder))
+                    extruders.push_back(head - 1);
             }
         }
 
@@ -946,7 +949,8 @@ std::vector<unsigned int> Print::object_extruders() const
                 //Add protection here to avoid overflow
                 auto value = layer_range.second.option("extruder")->getInt();
                 if (value > 0)
-                    extruders.push_back(fos_nozzle_head(m_config, value) - 1);
+                    for (int head : fos_filament_heads(m_config, value))
+                        extruders.push_back(head - 1);
             }
         }
     }
@@ -961,13 +965,21 @@ std::vector<unsigned int> Print::support_material_extruders() const
     bool support_uses_current_extruder = false;
     // BBS
     auto num_extruders = (unsigned int)m_config.filament_diameter.size();
-    // FOS: a mapped mixed filament lists the head it is sliced for; otherwise head 1 as upstream.
-    auto support_extruder_index = [this, num_extruders](int filament) -> unsigned int {
+    // FOS: a mapped mixed filament lists every head it prints with; otherwise head 1 as upstream.
+    auto add_support_extruder = [this, num_extruders, &extruders](int filament) {
         const unsigned int i = (unsigned int)filament - 1;
-        if (i < num_extruders)
-            return i;
-        const int head = fos_nozzle_head(m_config, filament);
-        return (head != filament && head >= 1 && (unsigned int)head <= num_extruders) ? (unsigned int)(head - 1) : 0;
+        if (i < num_extruders) {
+            extruders.emplace_back(i);
+            return;
+        }
+        bool mapped = false;
+        for (int head : fos_filament_heads(m_config, filament))
+            if (head != filament && head >= 1 && (unsigned int)head <= num_extruders) {
+                extruders.emplace_back((unsigned int)(head - 1));
+                mapped = true;
+            }
+        if (!mapped)
+            extruders.emplace_back(0);
     };
 
     for (PrintObject *object : m_objects) {
@@ -976,12 +988,12 @@ std::vector<unsigned int> Print::support_material_extruders() const
             if (object->config().support_filament == 0)
                 support_uses_current_extruder = true;
             else
-                extruders.emplace_back(support_extruder_index(object->config().support_filament.value));
+                add_support_extruder(object->config().support_filament.value);
         	assert(object->config().support_interface_filament >= 0);
             if (object->config().support_interface_filament == 0)
                 support_uses_current_extruder = true;
             else
-                extruders.emplace_back(support_extruder_index(object->config().support_interface_filament.value));
+                add_support_extruder(object->config().support_interface_filament.value);
         }
     }
 
@@ -1007,7 +1019,8 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
         if (m_model.plates_custom_gcodes.find(m_model.curr_plate_index) != m_model.plates_custom_gcodes.end()) {
             for (auto item : m_model.plates_custom_gcodes.at(m_model.curr_plate_index).gcodes) {
                 if (item.type == CustomGCode::Type::ToolChange && item.extruder <= int(num_filaments))
-                    extruders.push_back((unsigned int)(fos_nozzle_head(m_config, item.extruder) - 1));
+                    for (int head : fos_filament_heads(m_config, item.extruder))
+                        extruders.push_back((unsigned int)(head - 1));
             }
         }
     }

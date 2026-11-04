@@ -1477,6 +1477,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloats,             nozzle_diameter))
     ((ConfigOptionBool,               has_mixed_nozzle_sizes))
     ((ConfigOptionInts,               fos_filament_nozzle_head))
+    ((ConfigOptionStrings,            fos_filament_heads))
     ((ConfigOptionBool,               reduce_infill_retraction))
     ((ConfigOptionBool,               ooze_prevention))
     ((ConfigOptionString,             filename_format))
@@ -1624,6 +1625,9 @@ int    fos_nozzle_head(const PrintConfig &config, int filament_id);
 // Nozzle diameter for a 1-based filament ID. Identical to nozzle_diameter.get_at(filament_id - 1)
 // unless the ID is a mapped mixed filament.
 double fos_filament_nozzle_diameter(const PrintConfig &config, int filament_id);
+// Every physical head (1-based) a 1-based filament ID prints with: all heads of a mapped mixed
+// filament, otherwise just the ID itself.
+std::vector<int> fos_filament_heads(const PrintConfig &config, int filament_id);
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(
     FullPrintConfig,

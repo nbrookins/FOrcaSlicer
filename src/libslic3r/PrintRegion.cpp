@@ -89,12 +89,19 @@ void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_con
     auto num_extruders = (int)print_config.filament_diameter.size();
     auto emplace_extruder = [num_extruders, &print_config, &object_extruders](int extruder_id) {
     	int i = std::max(0, extruder_id - 1);
-        if (i >= num_extruders) {
-            // FOS: a mapped mixed filament lists the head it is sliced for; otherwise head 1 as upstream.
-            const int head = fos_nozzle_head(print_config, extruder_id);
-            i = (head != extruder_id && head >= 1 && head <= num_extruders) ? head - 1 : 0;
+        if (i < num_extruders) {
+            object_extruders.emplace_back(i);
+            return;
         }
-        object_extruders.emplace_back(i);
+        // FOS: a mapped mixed filament lists every head it prints with; otherwise head 1 as upstream.
+        bool mapped = false;
+        for (int head : fos_filament_heads(print_config, extruder_id))
+            if (head != extruder_id && head >= 1 && head <= num_extruders) {
+                object_extruders.emplace_back(head - 1);
+                mapped = true;
+            }
+        if (!mapped)
+            object_extruders.emplace_back(0);
     };
     if (region_config.wall_loops.value > 0 || has_brim) {
     	emplace_extruder(region_config.wall_filament);

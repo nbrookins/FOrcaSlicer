@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "PrintConfig.hpp"
 #include "ProjectSchemaVersion.hpp"
 #include "ClipperUtils.hpp"
@@ -4073,6 +4074,13 @@ void PrintConfigDef::init_fff_params()
                    "is sliced for. Not user-editable.";
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionInts());
+
+    def = this->add("fos_filament_heads", coStrings);
+    def->label = "Heads per filament";
+    def->tooltip = "Computed when slicing: comma-separated heads each filament, including mixed filaments, "
+                   "prints with. Not user-editable.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionStrings());
 
     // FOS: per-nozzle slot plumbing (fos.8.5). Written by the GUI into project_config
     // from the LIVE m_fos_slot_configs, so unsaved notebook edits are captured.
@@ -8183,6 +8191,28 @@ int fos_nozzle_head(const PrintConfig &config, int filament_id)
 double fos_filament_nozzle_diameter(const PrintConfig &config, int filament_id)
 {
     return config.nozzle_diameter.get_at(size_t(fos_nozzle_head(config, filament_id) - 1));
+}
+
+std::vector<int> fos_filament_heads(const PrintConfig &config, int filament_id)
+{
+    std::vector<int> heads;
+    const std::vector<std::string> &lists = config.fos_filament_heads.values;
+    if (filament_id > 0 && size_t(filament_id) <= lists.size()) {
+        const std::string &list  = lists[size_t(filament_id - 1)];
+        size_t             start = 0;
+        while (start < list.size()) {
+            const size_t comma = list.find(',', start);
+            const int    head  = std::atoi(list.substr(start, comma == std::string::npos ? std::string::npos : comma - start).c_str());
+            if (head > 0)
+                heads.push_back(head);
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+    }
+    if (heads.empty())
+        heads.push_back(filament_id);
+    return heads;
 }
 
 t_config_option_keys DynamicPrintConfig::normalize_fdm_2(int num_objects, int used_filaments)
