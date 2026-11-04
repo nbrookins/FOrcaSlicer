@@ -884,29 +884,12 @@ std::vector<unsigned int> MixedFilamentManager::physical_components(unsigned int
         if (out.empty())
             add(mf->component_a);
     } else {
-        // A head with no share never prints: a 0%/100% blend uses one component only, and a gradient
-        // component with weight 0 is skipped. Unknown or misaligned weights keep every component.
-        if (mf->mix_b_percent < 100)
-            add(mf->component_a);
-        if (mf->mix_b_percent > 0)
-            add(mf->component_b);
-        const std::vector<unsigned int> gradient_ids = decode_gradient_component_ids(mf->gradient_component_ids, num_physical);
-        std::vector<int> weights;
-        if (!mf->gradient_component_weights.empty()) {
-            size_t start = 0;
-            for (;;) {
-                const size_t slash = mf->gradient_component_weights.find('/', start);
-                weights.push_back(std::atoi(mf->gradient_component_weights.substr(start, slash - start).c_str()));
-                if (slash == std::string::npos)
-                    break;
-                start = slash + 1;
-            }
-        }
-        for (size_t k = 0; k < gradient_ids.size(); ++k)
-            if (weights.size() != gradient_ids.size() || weights[k] > 0)
-                add(gradient_ids[k]);
-        if (out.empty())
-            add(mf->component_a);
+        // Every component counts, even at a 0%/100% share or gradient weight 0: height-weighted
+        // cadence still gives each component a minimum height, so over-reporting is the safe side.
+        add(mf->component_a);
+        add(mf->component_b);
+        for (unsigned int id : decode_gradient_component_ids(mf->gradient_component_ids, num_physical))
+            add(id);
     }
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());

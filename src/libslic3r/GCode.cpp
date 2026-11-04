@@ -7249,7 +7249,9 @@ void GCode::append_full_config(const Print& print, std::string& str)
     // Sorted list of config keys, which shall not be stored into the G-code. Initializer list.
     static const std::set<std::string_view> banned_keys({"compatible_printers"sv, "compatible_prints"sv, "print_host"sv,
                                                          "print_host_webui"sv, "printhost_apikey"sv, "printhost_cafile"sv,
-                                                         "printhost_user"sv, "printhost_password"sv, "printhost_port"sv});
+                                                         "printhost_user"sv, "printhost_password"sv, "printhost_port"sv,
+                                                         // FOS: computed per slice, not settings
+                                                         "fos_filament_nozzle_head"sv, "fos_filament_heads"sv});
     auto                                    is_banned = [](const std::string& key) { return banned_keys.find(key) != banned_keys.end(); };
     std::ostringstream                      ss;
     for (const std::string& key : cfg.keys()) {
