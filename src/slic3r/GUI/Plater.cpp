@@ -6843,7 +6843,7 @@ void Sidebar::update_color_mix_panel()
                     lbl += wxString::Format("+F%u", fid);
         }
         
-        bool has_error = !is_filament_compatible(mf);
+        bool has_error = !is_filament_mix_allowed(mf);
         
         // Create a panel with border for the text
         auto* name_panel = new wxPanel(p->m_panel_color_mix_content, wxID_ANY);
@@ -13906,7 +13906,7 @@ bool Plater::priv::has_incompatible_mixed_filament_in_use() const
     // we can skip the per-object scan entirely.
     bool any_incompatible = false;
     for (const auto &mf : mgr.mixed_filaments()) {
-        if (mf.enabled && !mf.deleted && !is_filament_compatible(mf)) {
+        if (mf.enabled && !mf.deleted && !is_filament_mix_allowed(mf)) {
             any_incompatible = true;
             break;
         }
@@ -13935,7 +13935,7 @@ bool Plater::priv::has_incompatible_mixed_filament_in_use() const
 
     for (unsigned int fid : used_virtual_1based) {
         const MixedFilament *mf = mgr.mixed_filament_from_id(fid, num_physical);
-        if (mf && !is_filament_compatible(*mf)) {
+        if (mf && !is_filament_mix_allowed(*mf)) {
             BOOST_LOG_TRIVIAL(info) << "Slicing blocked: incompatible mixed filament (virtual ID "
                                     << fid << ") in use on current plate";
             m_cached_incompatible_mixed = true;

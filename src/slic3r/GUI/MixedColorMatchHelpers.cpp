@@ -1254,9 +1254,23 @@ bool is_filament_compatible(const std::vector<unsigned int>& filament_ids)
     return true;
 }
 
+static bool mixed_filament_physical_ids(const MixedFilament& mf, std::vector<unsigned int>& fids);
+
 bool is_filament_compatible(const MixedFilament& mf)
 {
     std::vector<unsigned int> fids;
+    return mixed_filament_physical_ids(mf, fids) && is_filament_compatible(fids);
+}
+
+bool is_filament_mix_allowed(const MixedFilament& mf)
+{
+    std::vector<unsigned int> fids;
+    return mixed_filament_physical_ids(mf, fids);
+}
+
+// 0-based physical filament ids of a mix; false if the mix is malformed.
+static bool mixed_filament_physical_ids(const MixedFilament& mf, std::vector<unsigned int>& fids)
+{
 
     if (!mf.manual_pattern.empty()) {
         // Cycle / pattern mode: the pattern tokens encode all participating
@@ -1310,7 +1324,7 @@ bool is_filament_compatible(const MixedFilament& mf)
         return false;
     }
 
-    return is_filament_compatible(fids);
+    return true;
 }
 
 std::optional<std::pair<unsigned int, unsigned int>> find_incompatible_filament_pair(const std::vector<unsigned int>& filament_ids)

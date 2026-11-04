@@ -7260,14 +7260,20 @@ static std::string serialize_gcode_config_option(const DynamicPrintConfig &confi
 // job). On a mixed-nozzle printer, when every head that puts out material shares one size, this returns a
 // line with that size for every head, to be written before CONFIG_BLOCK_START: the firmware reads it first,
 // while the config block (read back by load_from_gcode_file) keeps the real per-head sizes.
+// When the printing heads differ in size no single value can pass, so the line carries no number:
+// Moonraker then sends no NOZZLE_DIAMETER_LIST and the firmware skips that check (its per-head
+// filament/nozzle rules still apply); FOrca's per-head settings are what the G-code was sliced with.
 std::string GCode::fos_job_nozzle_line(const Print& print, const std::vector<unsigned int>& printing_extruders)
 {
     if (printing_extruders.empty() || !print.config().has_mixed_nozzle_sizes.value)
         return {};
     const auto &nozzles = print.config().nozzle_diameter.values;
     for (unsigned int extruder : printing_extruders)
-        if (extruder >= nozzles.size() || std::abs(nozzles[extruder] - nozzles[printing_extruders.front()]) > 1e-5)
+        if (extruder >= nozzles.size())
             return {};
+    for (unsigned int extruder : printing_extruders)
+        if (std::abs(nozzles[extruder] - nozzles[printing_extruders.front()]) > 1e-5)
+            return "; nozzle_diameter = per_head\n";
     ConfigOptionFloats uniform(print.config().nozzle_diameter);
     for (double &value : uniform.values)
         value = nozzles[printing_extruders.front()];

@@ -71,7 +71,9 @@ namespace {
 // nozzle_info[0] and judges materials by machine_model's "(X nozzle)". On a 0.2/0.2/0.4/0.4 printer a
 // 0.4-only job therefore failed on every head. When all heads that print material in the sliced result
 // (response "filament_used_mm") share one size, describe the job with that size; returns one such head
-// (0-based), or -1. Print::extruders() is not used: it lists head 1 for any volume without an extruder key.
+// (0-based), FOS_JOB_MIXED_NOZZLES when they differ, or -1 (not applicable / unknown).
+// Print::extruders() is not used: it lists head 1 for any volume without an extruder key.
+constexpr int FOS_JOB_MIXED_NOZZLES = -2;
 int fos_job_single_nozzle_head(const json &response, const Print *print)
 {
     if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
@@ -79,8 +81,9 @@ int fos_job_single_nozzle_head(const json &response, const Print *print)
     const auto it = response.find("filament_used_mm");
     if (it == response.end() || !it->is_array())
         return -1;
-    const auto &nozzles = print->config().nozzle_diameter.values;
-    int         head    = -1;
+    const auto &nozzles     = print->config().nozzle_diameter.values;
+    int         head        = -1;
+    bool        mixed_sizes = false;
     for (size_t i = 0; i < it->size(); ++i) {
         const json &used = (*it)[i];
         if (!used.is_number() || used.get<double>() <= 0.)
@@ -90,9 +93,9 @@ int fos_job_single_nozzle_head(const json &response, const Print *print)
         if (head < 0)
             head = int(i);
         else if (std::abs(nozzles[i] - nozzles[head]) > 1e-5)
-            return -1;
+            mixed_sizes = true;
     }
-    return head;
+    return mixed_sizes ? FOS_JOB_MIXED_NOZZLES : head;
 }
 
 std::string fos_job_machine_model(const std::string &preset_name, const json &response, const Print *print)
@@ -111,6 +114,13 @@ std::string fos_job_machine_model(const std::string &preset_name, const json &re
 void fos_uniform_job_nozzles(json &response, const Print *print)
 {
     const int head = fos_job_single_nozzle_head(response, print);
+    if (head == FOS_JOB_MIXED_NOZZLES) {
+        // Heads of different sizes: no single value passes the page's nozzle_info[0] comparison. Without
+        // the lists the page skips it (the G-code's per_head nozzle line does the same for the firmware).
+        response.erase("nozzle_info");
+        response.erase("nozzle_diameters");
+        return;
+    }
     if (head < 0)
         return;
     for (const char *key : {"nozzle_info", "nozzle_diameters"}) {

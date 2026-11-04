@@ -2214,11 +2214,12 @@ void MixedFilamentDialog::update_compatibility_warning()
     }
 
     if (!is_filament_compatible(fids)) {
-        if (auto pair = find_incompatible_filament_pair(fids)) {
-            set_error(wxString::Format(_L("Filament %d and Filament %d cannot be mixed. Please select filaments of the same type."), pair->first, pair->second));
-        } else {
-            set_error(_L("Different filament types cannot be mixed. Please correct the settings."));
-        }
+        // FOS: different materials may be mixed (each layer prints on its own head); warn about adhesion.
+        if (auto pair = find_incompatible_filament_pair(fids))
+            display_warning(wxString::Format(_L("Filament %d and Filament %d are different materials. Layers will alternate between them; check that they bond to each other."), pair->first, pair->second));
+        else
+            display_warning(_L("This mix combines different filament types. Layers will alternate between them; check that they bond to each other."));
+        if (m_btn_confirm) m_btn_confirm->Enable();
     } else if (wxString warning_msg = get_ratio_warning_msg(); !warning_msg.empty()) {
         display_warning(warning_msg);
         if (m_btn_confirm) m_btn_confirm->Enable();

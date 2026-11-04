@@ -157,6 +157,9 @@ wxColour                    blend_sequence_filament_mixer(const std::vector<wxCo
 
 bool is_filament_compatible(const std::vector<unsigned int>& filament_ids);
 bool is_filament_compatible(const MixedFilament& mf);
+// FOS: a user-made mix may combine material categories (each layer prints on its own head); only a
+// malformed mix is refused. Auto color-match suggestions keep using is_filament_compatible.
+bool is_filament_mix_allowed(const MixedFilament& mf);
 // Returns std::nullopt if all compatible (or insufficient data),
 // otherwise the 1-based filament IDs of the first incompatible pair.
 std::optional<std::pair<unsigned int, unsigned int>> find_incompatible_filament_pair(const std::vector<unsigned int>& filament_ids);
