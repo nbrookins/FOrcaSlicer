@@ -87,6 +87,30 @@ std::string fos_job_machine_model(const std::string &preset_name, const Print *p
     return wxGetApp().preset_bundle->printers.find_preset(candidate, false) != nullptr ? candidate : preset_name;
 }
 
+// FOS: the print page checks every file filament against nozzle_info[0] (it assumes one nozzle size per
+// job), so a 0.4-only job on a 0.2/0.2/0.4/0.4 printer fails on every head. When all heads the job uses
+// share one size, report that size for every head.
+void fos_uniform_job_nozzles(json &response, const Print *print)
+{
+    if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
+        return;
+    const std::vector<unsigned int> used = print->extruders();
+    if (used.empty())
+        return;
+    const double diameter = print->config().nozzle_diameter.get_at(used.front());
+    for (unsigned int extruder : used)
+        if (std::abs(print->config().nozzle_diameter.get_at(extruder) - diameter) > 1e-5)
+            return;
+    for (const char *key : {"nozzle_info", "nozzle_diameters"}) {
+        auto it = response.find(key);
+        if (it == response.end() || !it->is_array() || used.front() >= it->size())
+            continue;
+        const json value = (*it)[used.front()];
+        for (auto &entry : *it)
+            entry = value;
+    }
+}
+
 long long preprint_color_to_int(const std::string& color)
 {
     auto hex_digit = [](char digit) {
@@ -2696,6 +2720,7 @@ nlohmann::json SSWCP::build_filament_mapping_json(const std::string& filename, c
             preset_name = base_preset->name;
         }
         response["machine_model"] = fos_job_machine_model(preset_name, current_plate ? current_plate->fff_print() : nullptr);
+        fos_uniform_job_nozzles(response, current_plate ? current_plate->fff_print() : nullptr);
 
         json thumbnails = json::array();
         if (config.has("thumbnails")) {
@@ -2940,6 +2965,7 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
             c_preset         = base_preset->name;
         }
         response["machine_model"] = fos_job_machine_model(c_preset, print);
+        fos_uniform_job_nozzles(response, print);
 
         // file cover
         json thumbnails = json::array();
