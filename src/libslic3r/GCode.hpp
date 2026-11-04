@@ -268,7 +268,8 @@ public:
     std::string set_object_info(Print* print);
 
     // append full config to the given string
-    static void append_full_config(const Print& print, std::string& str, const std::vector<unsigned int>* printing_extruders = nullptr);
+    static void append_full_config(const Print& print, std::string& str);
+    static std::string fos_job_nozzle_line(const Print& print, const std::vector<unsigned int>& printing_extruders);
 
     // Object and support extrusions of the same PrintObject at the same print_z.
     // public, so that it could be accessed by free helper functions from GCode.cpp

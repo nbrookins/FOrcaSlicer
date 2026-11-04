@@ -3508,17 +3508,21 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
         file.write_format("; total layers count = %i\n", m_layer_count);
         file.write_format(";%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Estimated_Printing_Time_Placeholder).c_str());
         file.write("\n");
+        {
+            // Heads the firmware counts as used: "filament used [mm]" above (written %.2lf) is non-zero.
+            std::vector<unsigned int> printing_extruders;
+            for (const Extruder &extruder : m_writer.extruders()) {
+                const auto  &tower_used = print.wipe_tower_data().used_filament;
+                const double used_mm    = extruder.used_filament() +
+                                       (has_wipe_tower && extruder.id() < tower_used.size() ? tower_used[extruder.id()] : 0.);
+                if (used_mm >= 0.005)
+                    printing_extruders.push_back(extruder.id());
+            }
+            file.write(fos_job_nozzle_line(print, printing_extruders));
+        }
         file.write("; CONFIG_BLOCK_START\n");
         std::string full_config;
-        // Heads that put out material (same totals as the filament stats above).
-        std::vector<unsigned int> printing_extruders;
-        for (const Extruder &extruder : m_writer.extruders()) {
-            const auto &tower_used = print.wipe_tower_data().used_filament;
-            const bool  tower      = has_wipe_tower && extruder.id() < tower_used.size() && tower_used[extruder.id()] > 0.f;
-            if (extruder.extruded_volume() > 0. || tower)
-                printing_extruders.push_back(extruder.id());
-        }
-        append_full_config(print, full_config, &printing_extruders);
+        append_full_config(print, full_config);
         if (!full_config.empty())
             file.write(full_config);
 
@@ -7251,23 +7255,28 @@ static std::string serialize_gcode_config_option(const DynamicPrintConfig &confi
     return selected->serialize();
 }
 
-void GCode::append_full_config(const Print& print, std::string& str, const std::vector<unsigned int>* printing_extruders)
+// FOS: Snapmaker U1 firmware checks every head a job uses against element [0] of the first
+// "nozzle_diameter = " line Moonraker finds in the file's last 1 MiB (print_task_config: one nozzle size per
+// job). On a mixed-nozzle printer, when every head that puts out material shares one size, this returns a
+// line with that size for every head, to be written before CONFIG_BLOCK_START: the firmware reads it first,
+// while the config block (read back by load_from_gcode_file) keeps the real per-head sizes.
+std::string GCode::fos_job_nozzle_line(const Print& print, const std::vector<unsigned int>& printing_extruders)
+{
+    if (printing_extruders.empty() || !print.config().has_mixed_nozzle_sizes.value)
+        return {};
+    const auto &nozzles = print.config().nozzle_diameter.values;
+    for (unsigned int extruder : printing_extruders)
+        if (extruder >= nozzles.size() || std::abs(nozzles[extruder] - nozzles[printing_extruders.front()]) > 1e-5)
+            return {};
+    ConfigOptionFloats uniform(print.config().nozzle_diameter);
+    for (double &value : uniform.values)
+        value = nozzles[printing_extruders.front()];
+    return "; nozzle_diameter = " + uniform.serialize() + "\n";
+}
+
+void GCode::append_full_config(const Print& print, std::string& str)
 {
     const DynamicPrintConfig& cfg = print.full_print_config();
-    // FOS: Snapmaker U1 firmware checks every head a job uses against nozzle_diameter[0] of this block
-    // (print_task_config: one nozzle size per job). On a mixed-nozzle printer a job whose printing heads
-    // share one size is written with that size for every head, so the check compares the right value.
-    std::optional<double> fos_job_nozzle;
-    if (printing_extruders != nullptr && !printing_extruders->empty() && print.config().has_mixed_nozzle_sizes.value) {
-        const auto &nozzles = print.config().nozzle_diameter.values;
-        for (unsigned int extruder : *printing_extruders) {
-            if (extruder >= nozzles.size() || (fos_job_nozzle && std::abs(nozzles[extruder] - *fos_job_nozzle) > 1e-5)) {
-                fos_job_nozzle.reset();
-                break;
-            }
-            fos_job_nozzle = nozzles[extruder];
-        }
-    }
     // Sorted list of config keys, which shall not be stored into the G-code. Initializer list.
     static const std::set<std::string_view> banned_keys({"compatible_printers"sv, "compatible_prints"sv, "print_host"sv,
                                                          "print_host_webui"sv, "printhost_apikey"sv, "printhost_cafile"sv,
@@ -7284,12 +7293,7 @@ void GCode::append_full_config(const Print& print, std::string& str, const std::
             }
             if (key == "extruder_colour")
                 ss << "; " << key << " = " << cfg.opt_serialize("filament_colour") << "\n";
-            else if (key == "nozzle_diameter" && fos_job_nozzle) {
-                ConfigOptionFloats uniform(*cfg.option<ConfigOptionFloats>(key));
-                for (double &value : uniform.values)
-                    value = *fos_job_nozzle;
-                ss << "; " << key << " = " << uniform.serialize() << "\n";
-            } else
+            else
                 ss << "; " << key << " = " << serialize_gcode_config_option(cfg, key) << "\n";
         }
     }
