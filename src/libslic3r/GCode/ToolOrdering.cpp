@@ -1555,15 +1555,24 @@ bool WipingExtrusions::is_overriddable(const ExtrusionEntityCollection& eec, con
     if (print_config.filament_soluble.get_at(m_layer_tools->extruder(eec, region)))
         return false;
 
-    // FOS: a color mix alternates heads layer by layer; purging another head into this region
-    // would print it in the purge colour instead and break the mix pattern.
+    // FOS: a color mix alternates heads layer by layer; purging another head into an extrusion of a
+    // mixed filament would print it in the purge colour instead and break the mix pattern. Same role
+    // choice as LayerTools::extruder, on the unresolved filament IDs.
     if (const Print *print = object.print()) {
-        const size_t num_physical = print_config.filament_diameter.size();
-        const auto  &rcfg         = region.config();
-        for (int id : { rcfg.wall_filament.value, rcfg.inner_wall_filament.value, rcfg.sparse_infill_filament.value,
-                        rcfg.solid_infill_filament.value })
-            if (id > 0 && print->mixed_filament_manager().is_mixed(unsigned(id), num_physical))
-                return false;
+        const auto &rcfg = region.config();
+        int         source;
+        if (m_layer_tools->extruder_override != 0)
+            source = int(m_layer_tools->extruder_override);
+        else if (eec.has_infill()) {
+            const ExtrusionRole role = eec.entities.empty() ? erNone : eec.entities.front()->role();
+            source = internal_solid_infill_uses_sparse_filament(region, role) || !is_solid_infill(role) ?
+                         int(sparse_infill_filament_id_1based(region)) : rcfg.solid_infill_filament.value;
+        } else if (fos_is_outer_wall(eec, region) || rcfg.inner_wall_filament.value <= 0)
+            source = rcfg.wall_filament.value;
+        else
+            source = rcfg.inner_wall_filament.value;
+        if (source > 0 && print->mixed_filament_manager().is_mixed(unsigned(source), print_config.filament_diameter.size()))
+            return false;
     }
 
     if (object.config().flush_into_objects)

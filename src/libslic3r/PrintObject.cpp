@@ -4531,8 +4531,7 @@ void PrintObject::combine_infill()
         // FOS: a color mix alternates heads layer by layer; merging layers would print one head for
         // the whole stack and leave the layers in between empty on infill-only parts.
         {
-            const int infill_filament = use_solid_infill ? region.config().solid_infill_filament.value
-                                                         : region.config().sparse_infill_filament.value;
+            const int infill_filament = int(region.extruder(use_solid_infill ? frSolidInfill : frInfill));
             if (infill_filament > 0 &&
                 this->print()->mixed_filament_manager().is_mixed(unsigned(infill_filament), this->print()->config().filament_diameter.size()))
                 continue;

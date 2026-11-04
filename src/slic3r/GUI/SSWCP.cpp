@@ -55,6 +55,7 @@
 #include "slic3r/Utils/MQTT.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include <boost/filesystem/operations.hpp>
 #include <openssl/sha.h>
 
@@ -66,46 +67,47 @@ namespace Slic3r { namespace GUI {
 
 namespace {
 
-// FOS: on a mixed-nozzle printer the printer preset name carries nozzle 1's size
-// ("Snapmaker U1 (0.2 nozzle)"). The print page takes machine_model as the job's nozzle and then
-// rejects filaments that are not allowed on it (e.g. TPU on 0.2) for every head. Report the largest
-// nozzle the job actually prints with, as the matching existing printer preset name.
-std::string fos_job_machine_model(const std::string &preset_name, const Print *print)
+// FOS: the print page assumes one nozzle size per job: it checks every file filament against
+// nozzle_info[0] and judges materials by machine_model's "(X nozzle)". On a 0.2/0.2/0.4/0.4 printer a
+// 0.4-only job therefore failed on every head. When all heads the job uses (tool-change markers
+// included) share one size, describe the job with that size; returns one such head (0-based), or -1.
+int fos_job_single_nozzle_head(const Print *print)
 {
     if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
-        return preset_name;
-    double max_diameter = 0.;
-    for (unsigned int extruder : print->extruders())
-        max_diameter = std::max(max_diameter, print->config().nozzle_diameter.get_at(extruder));
+        return -1;
+    const std::vector<unsigned int> used     = print->extruders(true);
+    const auto                     &nozzles  = print->config().nozzle_diameter.values;
+    if (used.empty() || used.front() >= nozzles.size())
+        return -1;
+    for (unsigned int extruder : used)
+        if (extruder >= nozzles.size() || std::abs(nozzles[extruder] - nozzles[used.front()]) > 1e-5)
+            return -1;
+    return int(used.front());
+}
+
+std::string fos_job_machine_model(const std::string &preset_name, const Print *print)
+{
+    const int    head  = fos_job_single_nozzle_head(print);
     const size_t open  = preset_name.rfind('(');
     const size_t close = preset_name.rfind(" nozzle)");
-    if (max_diameter <= 0. || open == std::string::npos || close == std::string::npos || close < open)
+    if (head < 0 || open == std::string::npos || close == std::string::npos || close < open)
         return preset_name;
-    char diameter[16];
-    snprintf(diameter, sizeof(diameter), "%.1f", max_diameter);
-    const std::string candidate = preset_name.substr(0, open + 1) + diameter + preset_name.substr(close);
+    const std::string candidate = preset_name.substr(0, open + 1) +
+                                  float_to_string_decimal_point(print->config().nozzle_diameter.values[head], 1) +
+                                  preset_name.substr(close);
     return wxGetApp().preset_bundle->printers.find_preset(candidate, false) != nullptr ? candidate : preset_name;
 }
 
-// FOS: the print page checks every file filament against nozzle_info[0] (it assumes one nozzle size per
-// job), so a 0.4-only job on a 0.2/0.2/0.4/0.4 printer fails on every head. When all heads the job uses
-// share one size, report that size for every head.
 void fos_uniform_job_nozzles(json &response, const Print *print)
 {
-    if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
+    const int head = fos_job_single_nozzle_head(print);
+    if (head < 0)
         return;
-    const std::vector<unsigned int> used = print->extruders();
-    if (used.empty())
-        return;
-    const double diameter = print->config().nozzle_diameter.get_at(used.front());
-    for (unsigned int extruder : used)
-        if (std::abs(print->config().nozzle_diameter.get_at(extruder) - diameter) > 1e-5)
-            return;
     for (const char *key : {"nozzle_info", "nozzle_diameters"}) {
         auto it = response.find(key);
-        if (it == response.end() || !it->is_array() || used.front() >= it->size())
+        if (it == response.end() || !it->is_array() || size_t(head) >= it->size())
             continue;
-        const json value = (*it)[used.front()];
+        const json value = (*it)[head];
         for (auto &entry : *it)
             entry = value;
     }
