@@ -1695,6 +1695,17 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         if (bad != 0)
             return { (boost::format(_u8L("Mixed filament %1% combines heads with different nozzle sizes. A color mix can "
                                          "only use heads that share a nozzle size.")) % bad).str() };
+        // Support keyed to a mixed filament's virtual tool is never emitted by the G-code writer, which
+        // only walks physical tools; refuse instead of silently printing without support.
+        for (const PrintObject *object : m_objects) {
+            if (!object->has_support_material())
+                continue;
+            const PrintObjectConfig &ocfg = object->config();
+            for (int id : { ocfg.support_filament.value, ocfg.support_interface_filament.value })
+                if (id > 0 && m_mixed_filament_mgr.is_mixed(unsigned(id), num_physical))
+                    return { L("A mixed filament (color mixing) cannot be used for support or support interface on a "
+                               "printer with mixed nozzle sizes. Choose a physical filament for support.") };
+        }
     }
 
     // FOS: with mixed nozzle sizes, support has no valid "Default" filament. Support paths are
