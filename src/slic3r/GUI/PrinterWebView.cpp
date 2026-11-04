@@ -395,8 +395,12 @@ void PrinterWebView::StartAutoConnectWhenLanReachable()
 // user picks it). The gateway notifies every client, so the page shows the printer as connected.
 void PrinterWebView::AutoConnectSavedDevice()
 {
-    static bool attempted = false;
-    if (attempted)
+    // A freshly started gateway process can get "no route to host" on its first LAN attempts while
+    // macOS settles its Local Network decision, so a failed connect is retried a few times.
+    constexpr int kMaxAttempts = 6;
+    static bool   done         = false;
+    static int    attempts     = 0;
+    if (done)
         return;
     AppConfig *cfg = wxGetApp().app_config;
     if (cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
@@ -407,25 +411,39 @@ void PrinterWebView::AutoConnectSavedDevice()
         return;
     }
     if (wxGetApp().gateway_device_connected()) {
-        attempted = true;
+        done = true;
         return;
     }
     const std::vector<FosSavedDevice> devices = fos_saved_devices(*cfg);
     auto it = std::find_if(devices.begin(), devices.end(), [](const FosSavedDevice &d) { return !d.sn.empty() && !d.ip.empty(); });
     if (it == devices.end()) {
         BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, no saved LAN printer in " << cfg->config_path();
+        done = true;
         return;
     }
-    attempted = true;
+    ++attempts;
 
     nlohmann::json params = {{"type", "LAN"}, {"sn", it->sn}, {"ip", it->ip}};
-    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: connecting " << it->name << " (" << it->ip << ")";
-    const std::string name = it->name;
-    gateway->request("action.device.connect", params, [name](Gateway::GatewayError error, const nlohmann::json &) {
-        if (error)
-            BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " failed: " << error.message;
-        else
-            BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " connected";
+    BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: connecting " << it->name << " (" << it->ip << "), attempt " << attempts;
+    const std::string                  name  = it->name;
+    std::shared_ptr<std::atomic<bool>> alive = m_fos_alive;
+    gateway->request("action.device.connect", params, [this, alive, name](Gateway::GatewayError error, const nlohmann::json &) {
+        const bool        failed  = static_cast<bool>(error);
+        const std::string message = failed ? error.message : std::string();
+        wxTheApp->CallAfter([this, alive, name, failed, message]() {
+            if (!alive->load())
+                return;
+            if (!failed) {
+                done = true;
+                BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " connected";
+            } else if (attempts < kMaxAttempts && !wxGetApp().gateway_device_connected()) {
+                BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " failed (" << message << "); retrying in 3 s";
+                m_fos_autoconnect_timer.StartOnce(3000);
+            } else {
+                done = true;
+                BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: " << name << " failed: " << message << "; leaving it to the user";
+            }
+        });
     });
 }
 
