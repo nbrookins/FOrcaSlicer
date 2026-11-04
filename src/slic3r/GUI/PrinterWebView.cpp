@@ -93,6 +93,7 @@ void PrinterWebView::load_url(wxString& url, wxString apikey)
 
     m_browser->Show();
     WebView::LoadUrl(m_browser, url);
+    m_fos_requested_url = url;
     if (url.find("flutter_web") != wxString::npos)
         m_fos_autoconnect_timer.StartOnce(4000);
 
@@ -262,8 +263,18 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
 void PrinterWebView::AutoConnectSavedDevice()
 {
     static bool attempted = false;
-    if (attempted || m_browser == nullptr || !is_u1_device_page())
+    if (attempted || m_browser == nullptr)
         return;
+    // GetCurrentURL() can lag on the 1.8.x page, so also accept the URL this view was asked to load.
+    const bool device_page = is_u1_device_page() ||
+                             (m_fos_requested_url.find("flutter_web") != wxString::npos &&
+                              (m_fos_requested_url.find("/device_control") != wxString::npos ||
+                               m_fos_requested_url.find("path=2") != wxString::npos));
+    if (!device_page) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, not the device page (current="
+                                   << m_browser->GetCurrentURL().ToUTF8().data() << ")";
+        return;
+    }
     AppConfig *cfg = wxGetApp().app_config;
     if (cfg == nullptr || (cfg->has("fos_auto_connect_device") && !cfg->get_bool("fos_auto_connect_device")))
         return;
@@ -279,8 +290,10 @@ void PrinterWebView::AutoConnectSavedDevice()
     } catch (const std::exception &e) {
         BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: cannot read saved devices: " << e.what();
     }
-    if (names.empty())
+    if (names.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "[FOS] auto-connect: skipped, no saved device in " << cfg->config_path();
         return;
+    }
     attempted = true;
 
     const std::string script = R"((function(names) {

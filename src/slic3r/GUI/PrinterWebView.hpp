@@ -53,6 +53,7 @@ private:
     void SendAPIKey();
     void AutoConnectSavedDevice();
     wxTimer m_fos_autoconnect_timer;
+    wxString m_fos_requested_url;
 
     wxWebView* m_browser;
     long m_zoomFactor;
