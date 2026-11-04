@@ -66,6 +66,27 @@ namespace Slic3r { namespace GUI {
 
 namespace {
 
+// FOS: on a mixed-nozzle printer the printer preset name carries nozzle 1's size
+// ("Snapmaker U1 (0.2 nozzle)"). The print page takes machine_model as the job's nozzle and then
+// rejects filaments that are not allowed on it (e.g. TPU on 0.2) for every head. Report the largest
+// nozzle the job actually prints with, as the matching existing printer preset name.
+std::string fos_job_machine_model(const std::string &preset_name, const Print *print)
+{
+    if (print == nullptr || !print->config().has_mixed_nozzle_sizes.value)
+        return preset_name;
+    double max_diameter = 0.;
+    for (unsigned int extruder : print->extruders())
+        max_diameter = std::max(max_diameter, print->config().nozzle_diameter.get_at(extruder));
+    const size_t open  = preset_name.rfind('(');
+    const size_t close = preset_name.rfind(" nozzle)");
+    if (max_diameter <= 0. || open == std::string::npos || close == std::string::npos || close < open)
+        return preset_name;
+    char diameter[16];
+    snprintf(diameter, sizeof(diameter), "%.1f", max_diameter);
+    const std::string candidate = preset_name.substr(0, open + 1) + diameter + preset_name.substr(close);
+    return wxGetApp().preset_bundle->printers.find_preset(candidate, false) != nullptr ? candidate : preset_name;
+}
+
 long long preprint_color_to_int(const std::string& color)
 {
     auto hex_digit = [](char digit) {
@@ -2674,7 +2695,7 @@ nlohmann::json SSWCP::build_filament_mapping_json(const std::string& filename, c
             auto base_preset = wxGetApp().preset_bundle->printers.get_preset_base(current_preset);
             preset_name = base_preset->name;
         }
-        response["machine_model"] = preset_name;
+        response["machine_model"] = fos_job_machine_model(preset_name, current_plate ? current_plate->fff_print() : nullptr);
 
         json thumbnails = json::array();
         if (config.has("thumbnails")) {
@@ -2918,7 +2939,7 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
             auto base_preset = wxGetApp().preset_bundle->printers.get_preset_base(current_preset);
             c_preset         = base_preset->name;
         }
-        response["machine_model"] = c_preset;
+        response["machine_model"] = fos_job_machine_model(c_preset, print);
 
         // file cover
         json thumbnails = json::array();
