@@ -1194,6 +1194,14 @@ void GUI::ObjectList::set_sinking_hidden(const bool hide) const
     update_name_column_width();
 }
 
+// FOS: OW-identity - the "object filament group" is the set of feature filaments a whole-object
+// FOS: "Change all filaments" trickles the picked filament to. Outer wall (wall_filament) is the
+// FOS: group identity shown in the Fila column. To follow OrcaSlicer splitting top/bottom surface
+// FOS: out of solid infill later, just add "top_surface_filament"/"bottom_surface_filament" here.
+static const char* const FOS_OBJECT_FILAMENT_GROUP[] = {
+    "wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament"
+};
+
 void ObjectList::update_filament_in_config(const wxDataViewItem& item)
 {
     if (m_prevent_update_filament_in_config)
@@ -1258,18 +1266,23 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
         // Only the walls can form the rejected pair; a mixed infill under physical walls is valid and kept.
         const bool walls_involve_mixed = is_mixed(filament) || is_mixed(effective("wall_filament")) ||
                                          is_mixed(effective("inner_wall_filament"));
-        if (walls_involve_mixed) {
+        if (walls_involve_mixed)
             unify_object_filaments(*m_config, filament);
-            // An object-level pick shows on every part; a part or modifier keeping its own wall override
-            // would pair it with the object's (mixed) inner wall, so bring such volumes along.
-            if (item_type & itObject)
-                if (const int obj_idx = m_objects_model->GetIdByItem(item); obj_idx >= 0)
-                    for (ModelVolume *mv : (*m_objects)[obj_idx]->volumes)
-                        if ((mv->is_model_part() || mv->is_modifier()) &&
-                            (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
-                            unify_object_filaments(mv->config, filament);
-        } else
+        else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
+        // An object-level pick is the whole object's filament: parts drop their own feature filaments and
+        // follow the object (stock clears the parts' "extruder" below). A modifier keeps its own, except a
+        // wall override that would pair with the object's mixed inner wall.
+        if (item_type & itObject)
+            if (const int obj_idx = m_objects_model->GetIdByItem(item); obj_idx >= 0)
+                for (ModelVolume *mv : (*m_objects)[obj_idx]->volumes) {
+                    if (mv->is_model_part()) {
+                        for (const char *key : FOS_OBJECT_FILAMENT_GROUP)
+                            mv->config.erase(key);
+                    } else if (walls_involve_mixed && mv->is_modifier() &&
+                               (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
+                        unify_object_filaments(mv->config, filament);
+                }
     }
 
     // BBS
@@ -6051,14 +6064,6 @@ void ObjectList::OnEditingDone(wxDataViewEvent &event)
 }
 
 // BBS: remove "const" qualifier
-// FOS: OW-identity - the "object filament group" is the set of feature filaments a whole-object
-// FOS: "Change all filaments" trickles the picked filament to. Outer wall (wall_filament) is the
-// FOS: group identity shown in the Fila column. To follow OrcaSlicer splitting top/bottom surface
-// FOS: out of solid infill later, just add "top_surface_filament"/"bottom_surface_filament" here.
-static const char* const FOS_OBJECT_FILAMENT_GROUP[] = {
-    "wall_filament", "inner_wall_filament", "sparse_infill_filament", "solid_infill_filament"
-};
-
 // FOS: write the whole object filament group to `config`, unifying every feature filament to
 // FOS: `filament`. Shared by the "Unify Object Filaments" menu and the Object Table dropdown.
 void ObjectList::unify_object_filaments(ModelConfig& config, int filament)
@@ -6146,8 +6151,13 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
         if (type & itObject) {
             ObjectDataViewModelNode* node = (ObjectDataViewModelNode*)item.GetID();
             for (ModelVolume* mv : node->m_model_object->volumes) {
-                if (mv->type() == ModelVolumeType::MODEL_PART && mv->config.has("extruder"))
+                if (mv->type() != ModelVolumeType::MODEL_PART)
+                    continue;
+                if (mv->config.has("extruder"))
                     mv->config.erase("extruder");
+                // FOS: parts follow the object's new filament group instead of keeping their own.
+                for (const char* key : FOS_OBJECT_FILAMENT_GROUP)
+                    mv->config.erase(key);
             }
         }
 
