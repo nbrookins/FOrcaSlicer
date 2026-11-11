@@ -1270,19 +1270,8 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
             unify_object_filaments(*m_config, filament);
         else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
-        // An object-level pick is the whole object's filament: parts drop their own feature filaments and
-        // follow the object (stock clears the parts' "extruder" below). A modifier keeps its own, except a
-        // wall override that would pair with the object's mixed inner wall.
         if (item_type & itObject)
-            if (const int obj_idx = m_objects_model->GetIdByItem(item); obj_idx >= 0)
-                for (ModelVolume *mv : (*m_objects)[obj_idx]->volumes) {
-                    if (mv->is_model_part()) {
-                        for (const char *key : FOS_OBJECT_FILAMENT_GROUP)
-                            mv->config.erase(key);
-                    } else if (walls_involve_mixed && mv->is_modifier() &&
-                               (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
-                        unify_object_filaments(mv->config, filament);
-                }
+            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), filament, walls_involve_mixed);
     }
 
     // BBS
@@ -6063,6 +6052,31 @@ void ObjectList::OnEditingDone(wxDataViewEvent &event)
         plater->set_current_canvas_as_dirty();
 }
 
+// FOS: an object-level filament pick is the whole object's filament: its parts drop their own feature
+// FOS: filaments and follow the object. A modifier keeps its own, except (when the walls involve a mixed
+// FOS: filament) a wall override that would pair with the object's mixed inner wall (Print::validate).
+void ObjectList::make_parts_follow_object_filament(int obj_idx, int filament, bool walls_involve_mixed)
+{
+    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
+        return;
+    for (ModelVolume* mv : (*m_objects)[obj_idx]->volumes) {
+        if (mv->is_model_part()) {
+            mv->config.erase("extruder");
+            for (const char* key : FOS_OBJECT_FILAMENT_GROUP)
+                mv->config.erase(key);
+        } else if (walls_involve_mixed && mv->is_modifier() &&
+                   (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
+            unify_object_filaments(mv->config, filament);
+    }
+}
+
+bool ObjectList::is_mixed_filament(int filament) const
+{
+    const PresetBundle* bundle = wxGetApp().preset_bundle;
+    return bundle != nullptr && filament > 0 &&
+           bundle->mixed_filaments.is_mixed(unsigned(filament), bundle->filament_presets.size());
+}
+
 // BBS: remove "const" qualifier
 // FOS: write the whole object filament group to `config`, unifying every feature filament to
 // FOS: `filament`. Shared by the "Unify Object Filaments" menu and the Object Table dropdown.
@@ -6095,7 +6109,7 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
          * So, if Instance is selected, get its Object item and change it
          */
         ItemType sel_item_type = m_objects_model->GetItemType(sel_item);
-        wxDataViewItem item = (sel_item_type & itInstance) ? m_objects_model->GetObject(item) : sel_item;
+        wxDataViewItem item = (sel_item_type & itInstance) ? m_objects_model->GetObject(sel_item) : sel_item;
         ItemType type = m_objects_model->GetItemType(item);
         if (type & itVolume) {
             const int obj_idx = m_objects_model->GetObjectIdByItem(item);
@@ -6151,14 +6165,10 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
         if (type & itObject) {
             ObjectDataViewModelNode* node = (ObjectDataViewModelNode*)item.GetID();
             for (ModelVolume* mv : node->m_model_object->volumes) {
-                if (mv->type() != ModelVolumeType::MODEL_PART)
-                    continue;
-                if (mv->config.has("extruder"))
+                if (mv->type() == ModelVolumeType::MODEL_PART && mv->config.has("extruder"))
                     mv->config.erase("extruder");
-                // FOS: parts follow the object's new filament group instead of keeping their own.
-                for (const char* key : FOS_OBJECT_FILAMENT_GROUP)
-                    mv->config.erase(key);
             }
+            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), new_extruder, is_mixed_filament(new_extruder));
         }
 
         const wxString extruder_str = wxString::Format("%d", new_extruder);

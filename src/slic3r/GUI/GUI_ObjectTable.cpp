@@ -1579,6 +1579,9 @@ void ObjectGridTable::SetValue( int row, int col, const wxString& value )
             // FOS: engine + 3D tint + Fila column all follow. update_filament_to_config above keeps the
             // FOS: table's own "extruder" display value in sync.
             wxGetApp().obj_list()->unify_object_filaments(*grid_row->config, option_value.value);
+            if (grid_row->row_type == row_object)
+                wxGetApp().obj_list()->make_parts_follow_object_filament(
+                    grid_row->object_id, option_value.value, wxGetApp().obj_list()->is_mixed_filament(option_value.value));
             update_volume_values_from_object(row, col);
             wxGetApp().obj_list()->update_filament_values_for_items(m_panel->m_filaments_count);
             //m_panel->m_plater->update();
