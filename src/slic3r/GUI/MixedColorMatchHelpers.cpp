@@ -1270,6 +1270,8 @@ bool is_filament_mix_allowed(const MixedFilament& mf)
 
 bool is_filament_mix_allowed(const std::vector<unsigned int>& fids)
 {
+    if (fids.empty())
+        return false;
     if (is_filament_compatible(fids))
         return true;
     // Plater's high/low-temperature plate check only sees physical slots, not a mix's components, so a

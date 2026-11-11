@@ -1270,8 +1270,10 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
             unify_object_filaments(*m_config, filament);
         else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
-        if (item_type & itObject)
+        if (item_type & itObject) {
             make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), filament, walls_involve_mixed);
+            update_object_filament_column_display();
+        }
     }
 
     // BBS
@@ -6169,6 +6171,7 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
                     mv->config.erase("extruder");
             }
             make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), new_extruder, is_mixed_filament(new_extruder));
+            update_object_filament_column_display();
         }
 
         const wxString extruder_str = wxString::Format("%d", new_extruder);
@@ -6228,6 +6231,8 @@ void ObjectList::reload_all_plates(bool notify_partplate)
         obj_idxs.push_back(obj_idx);
         ++obj_idx;
     }
+    // FOS: rows were built from the legacy "extruder" key; show the outer-wall filaments (also after undo).
+    update_object_filament_column_display();
 
     update_selections();
 
