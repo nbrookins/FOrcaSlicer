@@ -1579,9 +1579,10 @@ void ObjectGridTable::SetValue( int row, int col, const wxString& value )
             ConfigOptionInt& option_value = dynamic_cast<ConfigOptionInt&>((*grid_row)[(GridColType)col]);
             ConfigOptionInt& option_ori_value = dynamic_cast<ConfigOptionInt&>((*grid_row)[(GridColType)(col + 1)]);
 
-            option_value.value = enum_value + 1;
             // FOS: an object pick also rewrites its parts' filaments; keep it undoable.
-            wxGetApp().plater()->take_snapshot("Change Filament");
+            if (option_value.value != enum_value + 1)
+                wxGetApp().plater()->take_snapshot("Change Filament");
+            option_value.value = enum_value + 1;
             update_filament_to_config(grid_row->config, grid_col->key, option_value, option_ori_value, (grid_row->row_type == row_object));
             // FOS: OW-identity - unify the object/part filaments (outer wall, inner wall, sparse and
             // FOS: solid infill) to the picked filament, same as the "Unify Object Filaments" menu, so
