@@ -1271,7 +1271,7 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
         else
             m_config->set_key_value("wall_filament", new ConfigOptionInt(filament));
         if (item_type & itObject) {
-            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), filament, walls_involve_mixed);
+            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), filament);
             update_object_filament_column_display();
         }
     }
@@ -2968,7 +2968,8 @@ void ObjectList::split()
             volume->is_text(),
             volume->is_svg(),
 			get_warning_icon_name(volume->mesh().stats()),
-            volume->config.has("extruder") ? volume->config.extruder() : 0,
+            volume->config.has("wall_filament") ? volume->config.opt_int("wall_filament") :
+                                                  (volume->config.has("extruder") ? volume->config.extruder() : 0),
             false);
         // add settings to the part, if it has those
         add_settings_item(vol_item, &volume->config.get());
@@ -4150,7 +4151,8 @@ wxDataViewItemArray ObjectList::add_volumes_to_object_in_list(size_t obj_idx, st
                 volume->is_text(),
                 volume->is_svg(),
                 get_warning_icon_name(volume->mesh().stats()),
-                volume->config.has("extruder") ? volume->config.extruder() : 0,
+                volume->config.has("wall_filament") ? volume->config.opt_int("wall_filament") :
+                                                      (volume->config.has("extruder") ? volume->config.extruder() : 0),
                 false);
             ui_and_3d_volume_map[ui_volume_idx] = volume_idx;
             ui_volume_idx++;
@@ -6054,21 +6056,33 @@ void ObjectList::OnEditingDone(wxDataViewEvent &event)
         plater->set_current_canvas_as_dirty();
 }
 
-// FOS: an object-level filament pick is the whole object's filament: its parts drop their own feature
-// FOS: filaments and follow the object. A modifier keeps its own, except (when the walls involve a mixed
-// FOS: filament) a wall override that would pair with the object's mixed inner wall (Print::validate).
-void ObjectList::make_parts_follow_object_filament(int obj_idx, int filament, bool walls_involve_mixed)
+// FOS: an object-level filament pick (already written to the object) is the whole object's filament: its
+// FOS: parts drop their own feature filaments and follow the object. A modifier keeps its own walls unless
+// FOS: its effective outer and inner wall would then differ with one of them mixed (Print::validate).
+void ObjectList::make_parts_follow_object_filament(int obj_idx, int filament)
 {
-    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
+    if (m_objects == nullptr || obj_idx < 0 || obj_idx >= int(m_objects->size()))
         return;
-    for (ModelVolume* mv : (*m_objects)[obj_idx]->volumes) {
+    const ModelObject        &object = *(*m_objects)[obj_idx];
+    const DynamicPrintConfig &global = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    auto object_value = [&](const char *key) {
+        return object.config.has(key) ? object.config.opt_int(key) : global.opt_int(key);
+    };
+    const int object_wall  = object_value("wall_filament");
+    const int object_inner = object_value("inner_wall_filament");
+    for (ModelVolume* mv : object.volumes) {
         if (mv->is_model_part()) {
             mv->config.erase("extruder");
             for (const char* key : FOS_OBJECT_FILAMENT_GROUP)
                 mv->config.erase(key);
-        } else if (walls_involve_mixed && mv->is_modifier() &&
-                   (mv->config.has("wall_filament") || mv->config.has("inner_wall_filament")))
-            unify_object_filaments(mv->config, filament);
+        } else if (mv->is_modifier()) {
+            const int wall  = mv->config.has("wall_filament") ? mv->config.opt_int("wall_filament") : object_wall;
+            const int inner = mv->config.has("inner_wall_filament") ? mv->config.opt_int("inner_wall_filament") : object_inner;
+            if (wall != inner && (is_mixed_filament(wall) || is_mixed_filament(inner))) {
+                mv->config.erase("extruder");
+                unify_object_filaments(mv->config, filament);
+            }
+        }
     }
 }
 
@@ -6166,17 +6180,13 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
         // for object, clear all its part volume's extruder config
         if (type & itObject) {
             ObjectDataViewModelNode* node = (ObjectDataViewModelNode*)item.GetID();
-            for (ModelVolume* mv : node->m_model_object->volumes) {
-                if (mv->type() == ModelVolumeType::MODEL_PART && mv->config.has("extruder"))
-                    mv->config.erase("extruder");
-            }
-            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), new_extruder, is_mixed_filament(new_extruder));
-            update_object_filament_column_display();
+            make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), new_extruder);
         }
 
         const wxString extruder_str = wxString::Format("%d", new_extruder);
         m_objects_model->SetExtruder(extruder_str, item);
     }
+    update_object_filament_column_display();
 
     // update scene
     wxGetApp().plater()->update();

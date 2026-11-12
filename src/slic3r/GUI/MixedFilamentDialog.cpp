@@ -2213,7 +2213,7 @@ void MixedFilamentDialog::update_compatibility_warning()
         }
     }
 
-    if (!is_filament_mix_allowed(fids)) {
+    if (!fids.empty() && !is_filament_mix_allowed(fids)) {
         set_error(_L("High-temperature and low-temperature filaments cannot be mixed. Please select filaments that print at similar temperatures."));
     } else if (!is_filament_compatible(fids)) {
         // FOS: different materials may be mixed (each layer prints on its own head); warn about adhesion.

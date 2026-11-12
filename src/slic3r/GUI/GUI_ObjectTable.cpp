@@ -1462,6 +1462,13 @@ void ObjectGridTable::update_volume_values_from_object(int row, int col)
             ObjectGridRow* part_row = m_grid_data[next_row - 1];
             if (part_row->row_type == row_volume) {
                 if (col == col_filaments) {
+                    // FOS: a volume's filament is its outer-wall filament (a modifier may keep its own).
+                    if (const auto* wall = static_cast<const ConfigOptionInt*>(part_row->config->option("wall_filament"))) {
+                        part_row->filaments = *wall;
+                        next_row++;
+                        need_refresh = true;
+                        continue;
+                    }
                     auto extruder_id_ptr = static_cast<const ConfigOptionInt*>(part_row->config->option(m_col_data[col]->key));
                     if (extruder_id_ptr) {
                         part_row->filaments = *extruder_id_ptr;
@@ -1573,6 +1580,8 @@ void ObjectGridTable::SetValue( int row, int col, const wxString& value )
             ConfigOptionInt& option_ori_value = dynamic_cast<ConfigOptionInt&>((*grid_row)[(GridColType)(col + 1)]);
 
             option_value.value = enum_value + 1;
+            // FOS: an object pick also rewrites its parts' filaments; keep it undoable.
+            wxGetApp().plater()->take_snapshot("Change Filament");
             update_filament_to_config(grid_row->config, grid_col->key, option_value, option_ori_value, (grid_row->row_type == row_object));
             // FOS: OW-identity - unify the object/part filaments (outer wall, inner wall, sparse and
             // FOS: solid infill) to the picked filament, same as the "Unify Object Filaments" menu, so
@@ -1580,8 +1589,7 @@ void ObjectGridTable::SetValue( int row, int col, const wxString& value )
             // FOS: table's own "extruder" display value in sync.
             wxGetApp().obj_list()->unify_object_filaments(*grid_row->config, option_value.value);
             if (grid_row->row_type == row_object)
-                wxGetApp().obj_list()->make_parts_follow_object_filament(
-                    grid_row->object_id, option_value.value, wxGetApp().obj_list()->is_mixed_filament(option_value.value));
+                wxGetApp().obj_list()->make_parts_follow_object_filament(grid_row->object_id, option_value.value);
             update_volume_values_from_object(row, col);
             wxGetApp().obj_list()->update_filament_values_for_items(m_panel->m_filaments_count);
             //m_panel->m_plater->update();

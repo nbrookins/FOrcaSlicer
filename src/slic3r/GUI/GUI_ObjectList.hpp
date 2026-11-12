@@ -240,7 +240,7 @@ public:
     void                update_filament_values_for_items(const size_t filaments_count);
     void                update_object_filament_column_display();
     void                unify_object_filaments(ModelConfig& config, int filament);
-    void                make_parts_follow_object_filament(int obj_idx, int filament, bool walls_involve_mixed);
+    void                make_parts_follow_object_filament(int obj_idx, int filament);
     bool                is_mixed_filament(int filament) const;
 
     //BBS: update plate
