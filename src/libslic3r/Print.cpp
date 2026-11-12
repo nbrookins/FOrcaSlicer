@@ -1720,17 +1720,23 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             if (!has_support)
                 continue;
             if (cfg.support_filament.value == 0)
-                return {L("Mixed nozzle sizes are in use, so support cannot be printed by whichever "
-                          "filament happens to be loaded. Select a filament for Support/raft base.")};
+                return {L("Support or raft is on, and with mixed nozzle sizes it needs a specific filament. "
+                          "In Process > Support, set \"Support/raft base\" to a filament (not Default), "
+                          "or turn off support and raft for this object."),
+                        object, "support_filament"};
             if (cfg.support_interface_filament.value == 0)
-                return {L("Mixed nozzle sizes are in use, so support cannot be printed by whichever "
-                          "filament happens to be loaded. Select a filament for Support/raft interface.")};
+                return {L("Support or raft is on, and with mixed nozzle sizes it needs a specific filament. "
+                          "In Process > Support, set \"Support/raft interface\" to a filament (not Default), "
+                          "or turn off support and raft for this object."),
+                        object, "support_interface_filament"};
         }
         // Same reasoning for the prime/wipe tower perimeter and brim: WipeTower2 holds a single
         // m_perimeter_width, so the wall cannot be left to whichever tool happens to be mounted.
         if (this->has_wipe_tower() && m_config.wipe_tower_filament.value == 0)
-            return {L("Mixed nozzle sizes are in use, so the prime tower wall cannot be printed by "
-                      "whichever filament happens to be loaded. Select a filament for Wipe tower.")};
+            return {L("The prime tower is on, and with mixed nozzle sizes its wall needs a specific filament. "
+                      "In Process > Multimaterial, set \"Wipe tower\" filament to a filament (not Default), "
+                      "or turn off the prime tower."),
+                    nullptr, "wipe_tower_filament"};
     }
 
     if (m_config.print_sequence == PrintSequence::ByObject) {

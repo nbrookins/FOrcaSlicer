@@ -11,6 +11,11 @@
 
 #include <wx/clipbrd.h>
 
+// FOS: generated before each local build (commit + date); absent in other builds.
+#if __has_include("common_func/fos_build_id.h")
+#include "common_func/fos_build_id.h"
+#endif
+
 namespace Slic3r {
 namespace GUI {
 
@@ -245,7 +250,11 @@ AboutDialog::AboutDialog()
         // FOS: identify the fork by name and fork version. Snapmaker_VERSION (2.3.2) is the
         // upstream base and stays out of the title; it is still what gets written into 3mf
         // metadata and project settings.
+#ifdef FOS_BUILD_ID
+        auto version_string = wxString::Format("FOrcaSlicer %s (%s)", FOS_VERSION, FOS_BUILD_ID);
+#else
         auto version_string = wxString::Format("FOrcaSlicer %s", FOS_VERSION);
+#endif
         wxStaticText* version = new wxStaticText(this, wxID_ANY, version_string, wxDefaultPosition, wxDefaultSize);
         wxStaticText* bs_version = new wxStaticText(this, wxID_ANY, wxString::Format("Based on Snapmaker Orca %s / Orca Slicer", Snapmaker_VERSION), wxDefaultPosition, wxDefaultSize);
         bs_version->SetFont(Label::Body_12);
