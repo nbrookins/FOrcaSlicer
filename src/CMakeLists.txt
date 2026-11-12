@@ -515,11 +515,18 @@ else ()
     endif ()
     if (CMAKE_MACOSX_BUNDLE)
         set(MACOSX_BUNDLE_ICON_FILE Icon.icns)
+        # FOS: the bundle reports the fork version; FOS_VERSION in common_func.hpp is the single source.
+        set(_fos_version_header "${CMAKE_SOURCE_DIR}/src/common_func/common_func.hpp")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fos_version_header}")
+        file(STRINGS "${_fos_version_header}" _fos_version_line REGEX "^#define FOS_VERSION ")
+        string(REGEX REPLACE ".*\"(.*)\".*" "\\1" FOS_VERSION "${_fos_version_line}")
         set_target_properties(Snapmaker_Orca PROPERTIES
             MACOSX_BUNDLE TRUE
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
             MACOSX_BUNDLE_BUNDLE_NAME "FOrcaSlicer"
-            MACOSX_BUNDLE_SHORT_VERSION_STRING ${Snapmaker_VERSION}
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${FOS_VERSION}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${FOS_VERSION}"
+            MACOSX_BUNDLE_LONG_VERSION_STRING "FOrcaSlicer ${FOS_VERSION} (Snapmaker Orca ${Snapmaker_VERSION})"
             MACOSX_BUNDLE_COPYRIGHT "Copyright © 2024-2026 Snapmaker. All rights reserved."
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/modules/MacOSXBundleInfo.plist.in")
         # Get the bundle directory by going up from the executable to the .app bundle
