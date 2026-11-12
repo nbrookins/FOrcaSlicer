@@ -6,6 +6,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "common_func/common_func.hpp"
+#include "FosTempHold.hpp"
 
 #include <wx/sizer.h>
 #include <wx/string.h>
@@ -119,6 +120,7 @@ void PrinterWebView::load_url(wxString& url, wxString apikey)
 #else
         m_fos_autoconnect_timer.StartOnce(4000);
 #endif
+        FosTempHold::start(wxGetApp().gateway_service());
     }
 
     UpdateState();
