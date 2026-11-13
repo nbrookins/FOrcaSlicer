@@ -1236,11 +1236,18 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
     if (item_type & itLayer)
         m_config->set_key_value("extruder", new ConfigOptionInt(extruder));
     else {
-        const int filament = extruder < 1 ? 1 : extruder;
+        int filament = extruder;
+        if (filament < 1) // "Default": the global outer wall, like right-click "Change filament"
+            filament = std::max(1, wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_int("wall_filament"));
         // A Fila-column pick is the item's filament: all four feature filaments (outer and inner wall,
         // sparse and solid infill) follow it, like right-click "Change filament". A different filament
-        // for one feature stays available in the item's Multimaterial settings.
-        unify_object_filaments(*m_config, filament);
+        // for one feature stays available in the item's Multimaterial settings. "Default" on a part means
+        // following its object.
+        if (extruder < 1 && (item_type & itVolume))
+            for (const char *key : FOS_OBJECT_FILAMENT_GROUP)
+                m_config->erase(key);
+        else
+            unify_object_filaments(*m_config, filament);
         if (item_type & itObject) {
             make_parts_follow_object_filament(m_objects_model->GetIdByItem(item), filament);
             update_object_filament_column_display();

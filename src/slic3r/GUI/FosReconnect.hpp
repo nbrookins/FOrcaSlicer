@@ -13,8 +13,11 @@ namespace GUI {
 class FosReconnect
 {
 public:
-    // Starts the watchdog once per app run; disabled with app config "fos_auto_reconnect" = 0.
+    // Starts the watchdog once per app run (later calls only switch it to `gateway`). Disabled with app
+    // config "fos_auto_reconnect" = 0.
     static void start(std::shared_ptr<Gateway::GatewayService> gateway);
+    // Ends the watchdog thread (app exit).
+    static void stop();
 };
 
 } // namespace GUI

@@ -9,6 +9,8 @@
 #include "slic3r/GUI/TaskManager.hpp"
 #include "format.hpp"
 #include "common_func/common_func.hpp"
+#include "FosTempHold.hpp"
+#include "FosReconnect.hpp"
 #include "Downloader.hpp"
 
 #include "slic3r/GUI/WebUrlDialog.hpp"
@@ -2402,6 +2404,8 @@ int GUI_App::OnExit()
 {
     ::Slic3r::SnapLog::v1::SnapLogClient::instance().shutdown();
 
+    FosTempHold::stop();
+    FosReconnect::stop();
     stop_gateway_service();
     stop_sync_user_preset();
 

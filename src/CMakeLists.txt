@@ -519,13 +519,22 @@ else ()
         set(_fos_version_header "${CMAKE_SOURCE_DIR}/src/common_func/common_func.hpp")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fos_version_header}")
         file(STRINGS "${_fos_version_header}" _fos_version_line REGEX "^#define FOS_VERSION ")
-        string(REGEX REPLACE ".*\"(.*)\".*" "\\1" FOS_VERSION "${_fos_version_line}")
+        # e.g. "2.4.1-fos.9.0.0-beta.1": Apple's version keys must be numeric -> 9.0.0 and 9.0.0.1 (beta 1).
+        if (NOT _fos_version_line MATCHES "\"(.*-fos\\.([0-9]+\\.[0-9]+\\.[0-9]+)(-beta\\.([0-9]+))?)\"")
+            message(FATAL_ERROR "FOS_VERSION not found or not of the form <base>-fos.X.Y.Z[-beta.N] in ${_fos_version_header}")
+        endif ()
+        set(FOS_VERSION "${CMAKE_MATCH_1}")
+        set(_fos_bundle_short "${CMAKE_MATCH_2}")
+        set(_fos_bundle_version "${CMAKE_MATCH_2}")
+        if (CMAKE_MATCH_4)
+            set(_fos_bundle_version "${CMAKE_MATCH_2}.${CMAKE_MATCH_4}")
+        endif ()
         set_target_properties(Snapmaker_Orca PROPERTIES
             MACOSX_BUNDLE TRUE
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
             MACOSX_BUNDLE_BUNDLE_NAME "FOrcaSlicer"
-            MACOSX_BUNDLE_SHORT_VERSION_STRING "${FOS_VERSION}"
-            MACOSX_BUNDLE_BUNDLE_VERSION "${FOS_VERSION}"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${_fos_bundle_short}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${_fos_bundle_version}"
             MACOSX_BUNDLE_LONG_VERSION_STRING "FOrcaSlicer ${FOS_VERSION} (Snapmaker Orca ${Snapmaker_VERSION})"
             MACOSX_BUNDLE_COPYRIGHT "Copyright © 2024-2026 Snapmaker. All rights reserved."
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/modules/MacOSXBundleInfo.plist.in")
