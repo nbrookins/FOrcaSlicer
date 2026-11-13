@@ -404,6 +404,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/PrinterWebView.cpp
     GUI/FosTempHold.cpp
     GUI/FosTempHold.hpp
+    GUI/FosReconnect.cpp
+    GUI/FosReconnect.hpp
     GUI/PrinterWebView.hpp
     GUI/PrintHostDialogs.cpp
     GUI/PrintHostDialogs.hpp
